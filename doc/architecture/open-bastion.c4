@@ -1,0 +1,154 @@
+model {
+  extend platform {
+    bastion = server {
+      technology 'Linux server'
+      title 'Bastion'
+
+      style {
+        icon bootstrap:shield-lock
+      }
+
+      bastion .connects protected-zone.backend 'connects user (as a hop)'
+
+      pam_openbastion = library {
+        #C
+        technology 'PAM module'
+        title 'pam_openbastion'
+        summary 'PAM authentication module'
+      }
+
+      libnss_openbastion = library {
+        #C
+        technology 'NSS library'
+        title 'libnss_openbastion'
+        summary 'NSS user resolution'
+      }
+
+      ob-cert = systemd-template-unit {
+
+        title 'ob-cert'
+        summary 'Certificate minting (per-connection)'
+
+        metadata {
+          user 'root'
+        }
+
+        ob-cert-daemon = executable {
+          #C
+          technology 'ELF executable'
+          title 'ob-cert-daemon'
+
+          metadata {
+            man-page true
+          }
+
+          this .uses ob_cert_proto
+        }
+      }
+
+      ob-fp = systemd-template-unit {
+
+        title 'ob-fp'
+        summary 'SSH fingerprint sink (per-deposit)'
+
+        metadata {
+          user 'root'
+        }
+
+        ob-fp-daemon = executable {
+          #C
+          technology 'ELF executable'
+          title 'ob-fp-daemon'
+
+          metadata {
+            man-page true
+          }
+        }
+      }
+
+      ob-record = systemd-template-unit {
+
+        title 'ob-record'
+        summary 'Session recording sink (per-connection)'
+
+        metadata {
+          user 'root'
+        }
+
+        ob-record-sink = executable {
+          #C
+          technology 'ELF executable'
+          title 'ob-record-sink'
+
+          metadata {
+            man-page true
+          }
+
+          this .uses ob_cert_proto
+        }
+      }
+
+      ob_cert_proto = component {
+        #C
+        technology 'compilation unit'
+        title 'ob_cert_proto'
+        summary 'Utilities to protect against buffer overflows and malformed inputs'
+      }
+
+      ob_jws = component {
+        #C
+        technology 'compilation unit'
+        title 'ob_jws'
+        summary 'JWS verification and JWKS handling'
+        description '
+          Checks the portal answers the host decides on: the issuer, the
+          audience, the endpoint, the request digest and nonce, and the key use
+          of the JWKS entry that signed them.
+        '
+      }
+
+      ob_client = component {
+        #C #HTTP
+        technology 'compilation unit'
+        title 'ob_client'
+        summary 'HTTP client that talks to the LemonLDAP::NG Portal'
+        description '
+          It consumes the `/pam/*` endpoints.
+          It has the hability to sign requests with HMAC-SHA256.
+        '
+
+        it .requests central-authority.llng.portal
+      }
+
+      configuration_subsystem = component {
+        #C
+        technology 'compilation unit'
+        summary 'Load configuration from file'
+        description '
+           The configuration is read from the configuration file, command
+           line arguments and PAM module arguments
+        '
+        this .uses openbastion_conf
+      }
+
+      auth_cache = file {
+        technology 'AES-256-GCM encrypted cache'
+        title 'Authorization cache'
+        summary '/var/cache/open-bastion/auth'
+        description '
+          Written by the account phase once the portal has answered, for the
+          TTL the answer carries and only when it allows offline use. Read only
+          when the portal cannot be reached: see the offline diagrams.
+        '
+        style {
+          multiple true
+        }
+      }
+
+      openbastion_conf = file {
+        technology 'configuration file'
+        title 'openbastion.conf'
+      }
+    }
+  }
+}

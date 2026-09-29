@@ -1,0 +1,141 @@
+model {
+  extend platform {
+    protected-zone = zone {
+      technology 'protected network'
+      title 'Protected zone'
+      style {
+        color green
+      }
+      backend = server {
+        technology 'Linux server'
+        title 'Backend'
+        style {
+         multiple true
+        }
+
+        /*
+         * A backend runs the same two shared objects as the bastion, loaded by
+         * the same two entry points, and the same configuration set minus the
+         * parts only the hop needs (the certificate socket, the heartbeat).
+         * They are separate elements here because they are separate hosts: a
+         * backend is patched and administered on its own schedule.
+         */
+
+        backend_sshd = external-server {
+          technology 'OpenSSH'
+          title 'sshd'
+          summary 'OpenSSH server, verifies the certificate the bastion mints'
+          description '
+            Accepts a connection only with a certificate the ssh-ca plugin
+            signed for this backend group, refuses one whose serial is in the
+            KRL, and consults PAM for the account.
+          '
+
+          this .uses platform.protected-zone.backend.configuration.openbastion_pam_stack
+          this .uses platform.protected-zone.backend.configuration.open_bastion_ca_pub
+          this .uses platform.protected-zone.backend.configuration.revoked_keys
+        }
+
+
+
+
+        backend_pam_openbastion_so = executable {
+          #C
+          technology 'ELF shared object'
+          title 'pam_openbastion.so'
+          summary '/usr/lib/<multiarch>/security/pam_openbastion.so'
+          description '
+            Authorises an SSH session and a `sudo` elevation, asking the portal
+            for both (`/pam/authorize`), and answering from the local cache
+            when the portal cannot be reached and the offline cache was armed.
+          '
+
+          backend_pam_openbastion_so .uses backend_ob_client
+          backend_pam_openbastion_so .uses backend_auth_cache
+          backend_pam_openbastion_so .uses backend_offline_cache
+        }
+
+        backend_ob_client = component {
+          #C #HTTP
+          technology 'compilation unit'
+          title 'ob_client'
+          summary 'HTTP client, backend instance'
+
+          it .requests central-authority.llng.portal
+        }
+
+        backend_auth_cache = file {
+          #C
+          technology 'JSON cache'
+          title 'Authorization cache'
+          summary '/var/cache/open-bastion/auth'
+          description '
+            A `sudo` inside a session that was just authorised does not open a
+            second round trip: the answer is cached per user, server group and
+            host, and the cached entry is what the elevation is decided on.
+          '
+        }
+
+        fp_spool = file {
+          technology 'spool directory'
+          title 'Public key fingerprints'
+          summary '/run/open-bastion/ssh-fp/<anchor>.fp, on the backend'
+          description '
+            Deposited by this host when the hop session was opened:
+            `ob-ssh-principals.backend` submits the fingerprint of the key that
+            presented the certificate, and `ob-fp-submit` hands it to the sink
+            as root. `pam_openbastion` reads it back to bind the elevation to
+            that key.
+          '
+          style {
+            multiple true
+          }
+        }
+
+        /*
+         * The configuration set this host carries. Same files as the bastion,
+         * minus the ones only the hop needs (no `ssh-proxy.conf`, no
+         * `session-recorder.conf`, no certificate socket, no heartbeat);
+         * `ob-bastion-setup` writes them from the same package.
+         */
+
+        configuration_subsystem = component {
+          #C
+          technology 'compilation unit'
+          summary 'Load configuration from file'
+          description '
+            The configuration is read from the configuration file, command line
+            arguments and PAM module arguments.
+          '
+
+          this .uses openbastion_conf
+        }
+
+        openbastion_conf = file {
+          technology 'configuration file'
+          title 'openbastion.conf'
+          summary '/etc/open-bastion/openbastion.conf'
+          description '
+            The keys of this backend: `create_user_enabled`, `create_home` and
+            `default_shell` decide the account the portal asks this host to
+            create on a first connection.
+          '
+        }
+
+
+
+        backend_offline_cache = file {
+          #C
+          technology 'AES-256-GCM encrypted cache'
+          title 'Offline credential cache'
+          summary '/var/cache/open-bastion/credentials'
+          description '
+            Written at a successful login, encrypted with a key derived from
+            the machine id and a host secret, and consumed only while the
+            portal is unreachable.
+          '
+        }
+      }
+    }
+  }
+}

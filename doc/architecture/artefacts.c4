@@ -1,0 +1,106 @@
+model {
+
+  /*
+   * The two shared objects the host loads, and what loads them.
+   *
+   * They are the only parts of open-bastion the host's own daemons enter
+   * through: sshd, sudo and login never exec anything of ours to authenticate a
+   * user, they resolve a name or call PAM. Everything else runs from a unit.
+   */
+  extend platform.bastion {
+
+    pam_openbastion_so = executable {
+      #C
+      technology 'ELF shared object'
+      title 'pam_openbastion.so'
+      summary '/usr/lib/<multiarch>/security/pam_openbastion.so'
+      description '
+        The PAM module. Loaded by the stack of every service that must
+        authenticate or authorise: sshd, sudo, sudo -i, systemd-user, the
+        desktop greeter. It holds no configuration of its own: it reads
+        `openbastion.conf`, calls the portal through `ob_client`, and reads the
+        fingerprint the SSH session deposited.
+      '
+    }
+
+    libnss_openbastion_so = executable {
+      #C
+      technology 'ELF shared object'
+      title 'libnss_openbastion.so.2'
+      summary '/usr/lib/<multiarch>/libnss_openbastion.so.2'
+      description '
+        The NSS library. Loaded by every process that resolves a name
+        (`getpwnam`, `getpwuid`, `initgroups`), so a user the directory knows
+        exists locally before any session opens: the PAM module then finds a
+        passwd entry, and a home, without asking the portal twice.
+      '
+    }
+
+    pam_openbastion .produces pam_openbastion_so
+    libnss_openbastion .produces libnss_openbastion_so
+
+    pam_openbastion_so .uses openbastion_conf
+    pam_openbastion_so .uses ob_client
+    pam_openbastion_so .uses ob_cert_proto
+    pam_openbastion_so .uses ob_jws
+
+    libnss_openbastion_so .uses nss_openbastion_conf
+    libnss_openbastion_so .uses ob_client
+    libnss_openbastion_so .uses ob_jws
+
+    /* What enters through them. */
+    openbastion_pam_stack .uses pam_openbastion_so
+    nsswitch_conf .uses libnss_openbastion_so
+
+    /*
+     * The hop's material: the certificate ob-ssh writes next to the ephemeral
+     * key it was signed for, in a tmpfs directory. It is the one artefact of
+     * the chain that never reaches a disk.
+     */
+    hop_keypair = file {
+      technology 'OpenSSH key pair'
+      title 'Ephemeral key pair'
+      summary '${XDG_RUNTIME_DIR:-/dev/shm}/ob-hop.XXXXXX/id, id.pub'
+      description '
+        Generated per hop by ssh-keygen into the same tmpfs directory as the
+        certificate. Only its public half is ever sent: it goes to the cert
+        daemon, and the certificate that comes back is signed for it. The
+        private half never leaves the bastion and is removed with the
+        directory.
+      '
+
+      style {
+        multiple true
+        icon bootstrap:key-fill
+      }
+
+      ob_ssh .produces hop_keypair 'generates it in tmpfs'
+      ob_ssh .uses hop_keypair 'reads the public half, and hands both paths to ssh'
+    }
+
+    hop_certificate = file {
+      technology 'OpenSSH certificate'
+      title 'Short-lived certificate'
+      summary '${XDG_RUNTIME_DIR:-/dev/shm}/ob-hop.XXXXXX/id-cert.pub'
+      description '
+        Minted per hop by the portal, then written by ob-ssh in a tmpfs
+        directory alongside the ephemeral key it was signed for. It lives in
+        memory only, its private half never leaves the bastion, and the
+        directory is removed when the connection ends. The backend accepts it
+        because the CA signed it and its serial is not in the KRL.
+      '
+
+      style {
+        multiple true
+        icon bootstrap:patch-check
+      }
+
+      ob_ssh .produces hop_certificate 'writes it into tmpfs'
+      ob_ssh .uses hop_certificate 'passes the certificate to ssh as CertificateFile'
+
+      hop_certificate .uses hop_keypair 'signed for its public half'
+    }
+
+    platform.central-authority.ssh_ca .produces hop_certificate 'signs it'
+  }
+}
