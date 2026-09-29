@@ -1,0 +1,121 @@
+model {
+
+  /*
+   * The recording chain and the fingerprint spool.
+   *
+   * Both follow the same shape: an unprivileged process (the recorder, the
+   * principals helper) writes into a socket, and a root daemon behind it writes
+   * the file. Neither trusts anything the caller says about who it is.
+   */
+  extend platform.bastion {
+
+    /*
+     * What the connecting flows show as one node: the recorder sshd starts, the
+     * connector that frames the stream, the socket, and the root sink behind it.
+     * Only a bastion runs this chain.
+     */
+    recording-pipe = component {
+      technology 'socket-activated pipe'
+      title 'Session recording pipe'
+
+      style {
+        shape queue
+      }
+
+      ob_session_recorder = executable {
+        #Bash
+        technology 'shell script'
+        title 'ob-session-recorder'
+        summary 'Starts the recording of a session or a command'
+        description '
+          Started by sshd (`ForceCommand`) for a session, and by the sudo path for an elevation. It frames the stream and hands it to the connector.
+        '
+
+        this .uses session_recorder_conf 'reads what this session captures, and where the stream goes'
+        this .uses ob_record_connect 'runs it as the logged-in user, and refuses the session unless it reports the sink accepted'
+      }
+
+      ob_record_connect = executable {
+        #C
+        technology 'ELF executable'
+        title 'ob-record-connect'
+        summary 'Unprivileged client of the recording socket'
+
+        this .uses ob-record-socket 'writes the metadata header into it, then streams the typescript'
+      }
+
+      ob-record-socket = systemd-unit {
+        #socket
+        title 'ob-record.socket'
+        summary 'Session recording socket'
+        description '
+          `/run/open-bastion/rec.sock`, `Accept=yes`. The recorder (`ob-record-connect`, run as the session user) hands the stream over; the sink runs as root and writes under the sessions directory.
+        '
+
+        ob-record-socket .triggers ob-record 'socket-activates'
+      }
+
+      ob-record = systemd-template-unit {
+        title 'ob-record'
+        summary 'Session recording sink (per-connection)'
+
+        metadata {
+          user 'root'
+        }
+
+        ob-record-sink = executable {
+          #C
+          technology 'ELF executable'
+          title 'ob-record-sink'
+
+          metadata {
+            man-page true
+          }
+
+          this .uses platform.open-bastion.ob_cert_proto
+          this .uses json-c 'writes the record of the session with it'
+        }
+      }
+    }
+
+    ssh_fp_spool = file {
+      technology 'spool directory'
+      title 'Public key fingerprints'
+      summary '/run/open-bastion/ssh-fp/<anchor>.fp, <anchor>.key'
+      description '
+        Two drops per SSH session, owned by root, mode 0600, and `pam_openbastion` reads the pair matching its session anchor. The `.fp` drop is the `SHA256:` fingerprint it sends to the portal, which is what binds the session to that key; the `.key` drop carries the algorithm and the key blob, which the SSH key policy reads to decide whether that key is allowed. They are separate files so that an older module, which knows only `.fp`, keeps working with a newer helper.
+      '
+
+      style {
+        multiple true
+      }
+
+      platform.open-bastion.fingerprint-pipe .produces ssh_fp_spool 'writes the drop, as root'
+      platform.open-bastion.fingerprint-pipe .produces platform.protected-zone.backend.fp_spool 'writes the drop, as root'
+    }
+
+    sessions_dir = file {
+      technology 'directory'
+      title 'Session recordings'
+      summary '/var/lib/open-bastion/sessions/<user>/'
+      description '
+        One `.typescript` and one `.json` per session, both written by the sink through `O_EXCL` so a duplicate session id cannot truncate an existing record. Readable by the audit group only.
+      '
+
+      style {
+        multiple true
+      }
+
+      recording-pipe .produces sessions_dir 'writes the typescript and its metadata'
+      recording-pipe.ob-record.ob-record-sink .produces sessions_dir 'writes the typescript and its metadata'
+    }
+
+    /* sshd starts the recorder through the `ForceCommand` of its drop-in. */
+    sshd .uses recording-pipe 'starts the recording through ForceCommand'
+    /* sshd hands the fingerprint of the key that opened the session to the
+     * pipe, which writes the drop. */
+    sshd .uses platform.open-bastion.fingerprint-pipe 'deposits the fingerprint of the key that opened the session'
+    ob-session-prune-bin .uses sessions_dir 'compresses and expires the recordings'
+    ob-session-prune-bin .uses session_recorder_conf 'reads the retention it applies'
+  }
+}

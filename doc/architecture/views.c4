@@ -1,0 +1,349 @@
+views {
+
+  /*
+   * `index` is the landing page: `likec4.config.json` redirects to the view
+   * with this id, so it holds the simplest picture of the system -- the user
+   * and what they reach. The wider landscape is `overview` below, which links
+   * back to this view and to `administrator-context`.
+   */
+  view index {
+    title 'User Context'
+    link https://github.com/linagora/open-bastion 'GitHub'
+    description '
+      SSH and sudo access to a fleet of Linux servers, decided by LemonLDAP::NG.
+
+      A user connects to the bastion, which hops into the protected zone with a short-lived certificate the portal mints for that hop, and every host asks the portal whether the session and the elevation are allowed — and keeps the answer for when the portal cannot be reached.
+    '
+
+    include workstation.user
+
+    include platform.bastion with {
+      navigateTo open-bastion-modules
+    }
+    include platform.central-authority  with {
+      navigateTo central-authority
+    }
+    include platform.central-authority.llng
+    include platform.protected-zone
+    include platform.protected-zone.backend with {
+      navigateTo open-bastion-modules
+    }
+  }
+
+  view overview {
+    title 'Overview'
+    link https://github.com/linagora/open-bastion 'GitHub'
+    description '
+      The whole landscape, in one picture.
+
+      A user reaches a backend only through the bastion, which hops into the protected zone on their behalf; the administrator deploys and enrols the hosts, on both sides of that frontier. Every host asks the same authority for its decisions, and the same package runs on each of them.
+    '
+
+    include workstation
+    include workstation.user with {
+      navigateTo index
+    }
+
+    include platform
+    include platform.central-authority with {
+      navigateTo central-authority
+    }
+    include platform.central-authority.llng
+    include platform.central-authority.ldap
+
+    include platform.bastion with {
+      navigateTo open-bastion-modules
+    }
+
+    include platform.protected-zone
+    include platform.protected-zone.backend with {
+      navigateTo open-bastion-modules
+    }
+
+    include workstation.administrator with {
+      navigateTo administrator-context
+    }
+    style platform {
+      border dashed
+    }
+    style workstation.user {
+      border none
+      shape person
+    }
+  }
+
+  view administrator-context {
+    title 'Administrator Context'
+    link https://github.com/linagora/open-bastion 'GitHub'
+    description '
+      What the administrator touches.
+
+      The administrator is responsible for the deployment of open-bastion on the bastion and the backends. He also deploys the LemonLDAP::NG plugins.
+
+      The administrator approves the enrolment of the hosts, and maintains the server groups and the access rules.
+    '
+
+    include workstation.administrator
+
+    include platform.bastion with {
+      navigateTo open-bastion-modules
+    }
+    include platform.central-authority with {
+      navigateTo central-authority
+    }
+    include platform.central-authority.llng
+    include platform.protected-zone
+    include platform.protected-zone.backend with {
+      navigateTo open-bastion-modules
+    }
+
+    exclude platform.bastion -> platform.protected-zone.backend
+  }
+
+  view bastion-configuration-files {
+    title 'Configuration/Bastion configuration files'
+    description '
+      The configuration files the bastion carries.
+
+      They come from three hands: the package installs the two configuration files, the installer writes the PAM stack, the SSH daemon drop-in and the hardening files from the inventory of the host, and the modules and scripts keep the token, the keys and the revocation list up to date. One belongs to the operator alone: `service-accounts.conf`, the accounts allowed to skip the portal.
+    '
+
+    include platform.bastion.configuration
+    include platform.bastion.configuration.*
+
+    include platform.bastion.ob-krl-refresh-bin
+    include platform.open-bastion.ob_enroll
+    include platform.open-bastion.ob_bastion_setup
+    include platform.bastion.ob-heartbeat-bin
+
+    /*
+     * Who reads the files, not only who writes them: the client presents the
+     * token and checks the answers against the portal keys, and the helper
+     * checks a signed answer against the same keys.
+     */
+    include platform.open-bastion.ob_client
+    include platform.open-bastion.ob_verify_response
+
+    /* And what reads the configuration files themselves: the module and the
+     * NSS library, on the host they are loaded on. */
+    include platform.open-bastion.pam_openbastion
+    include platform.open-bastion.libnss_openbastion_so
+
+    /*
+     * And who reads the hardening files: the host daemons they configure.
+     * Declared once, in `external.c4`, because each authenticates the same way
+     * on either role.
+     */
+    include auditd
+    include systemd-logind
+    include pam_limits
+    include cron
+    include atd
+    include logrotate
+  }
+
+  view backend-configuration-files {
+    title 'Configuration/Backend configuration files'
+    description '
+      The configuration files a backend carries.
+
+      The same set as a bastion, without the files only the hop reads — the SSH proxy, the session recorder, the certificate socket — and with one of its own: `allowed-bastions`, the bastions whose vouchers it accepts. The package installs the two configuration files, the installer writes the rest from the inventory of the host, and the token and the revocation list are kept up to date by the scripts that run on it.
+    '
+
+    include platform.protected-zone.backend.configuration
+    include platform.protected-zone.backend.configuration.*
+
+    /* The same client reads these files here: the token, and the keys it
+     * checks a signed answer against. */
+    include platform.open-bastion.ob_client
+    include platform.open-bastion.ob_bastion_setup
+    include platform.open-bastion.pam_openbastion
+    include platform.open-bastion.libnss_openbastion_so
+
+    /* The same daemons read this host's copy of each hardening file. */
+    include auditd
+    include systemd-logind
+    include pam_limits
+    include cron
+    include atd
+    include logrotate
+  }
+
+  /*
+   * The open-bastion software, and what it calls. `ob-bastion-setup` installs
+   * the same package on a bastion and on a backend, so this view is rooted at
+   * no host on purpose: it is the diagram the two roles share, and the one the
+   * overview opens when either of them is clicked. What differs between the
+   * roles -- the entry points, the configuration, the units -- belongs to the
+   * host that carries it and is drawn there; `deployment.c4` shows the split.
+   */
+  view open-bastion-modules {
+    title 'Open Bastion modules'
+    description '
+      The shared components of the package.
+
+      One artefact each, installed the same way on a bastion and on a backend: the PAM module and the NSS library, the executables and the shell toolkit that drive them, the pipes that carry a fingerprint or a certificate between them, and the libraries the whole of it links. What differs between the two roles is not the file but the configuration it reads.
+    '
+
+    include platform.open-bastion
+    include platform.open-bastion.*
+
+    /* The pipe is one node here; open it for the detail. */
+    include platform.open-bastion.fingerprint-pipe with {
+      navigateTo public-key-fingerprint-pipe
+    }
+
+    /* The compilation units the objects are built from, not artefacts. */
+    exclude platform.open-bastion.ob_client
+    exclude platform.open-bastion.ob_jws
+    exclude platform.open-bastion.ob_cert_proto
+
+    /* What the objects link, declared once at the top level. */
+    include libcurl
+    include json-c
+    include openssl
+    include curl
+    include libpam
+  }
+
+  /*
+   * The authority side: the portal, the plugins that answer its endpoints, the
+   * session store behind its authentication, the CA the certificates are
+   * signed with, and the directory the rules are read from.
+   */
+  view central-authority {
+    title 'Central authority'
+    description '
+      The authority the platform asks, and its four plugins.
+
+      `pam-access` mints the one-time tokens and decides the session authorisations on `/pam/*`; `ssh-ca` signs the SSH certificates, hands out the CA public key and publishes the revocation list on `/ssh/*`; `oidc-device-authorization` runs the device grant a host is enrolled through; `oidc-device-organization` owns the per-device identity that enrolment assigns, and a backend allowlist is keyed on it.
+
+      A client reaches a plugin through the portal: the portal loads them, and serves what they register.
+    '
+
+    include platform.central-authority
+    include platform.central-authority.llng
+    include platform.central-authority.llng.portal
+    include platform.central-authority.llng.llng-plugins
+    include platform.central-authority.llng.llng-plugins.*
+    include platform.central-authority.llng_sessions
+    include platform.central-authority.ssh_ca
+    include platform.central-authority.ldap
+  }
+
+  /*
+   * The fingerprint pipe opened up: what the connecting flows show as one node.
+   * The depositor and the socket run unprivileged, the sink behind them writes
+   * as root, and the drop it leaves is what binds a session to its key.
+   */
+  view public-key-fingerprint-pipe {
+    title 'Public key fingerprint pipe'
+    description '
+      The pipe an SSH fingerprint travels through.
+
+      The helper the SSH daemon runs deposits the fingerprint of the key that opened the session, unprivileged, and the sink behind the socket writes the drop as root. OpenSSH gives PAM no way to know which key opened the connection, so the module reads the drop back and sends the fingerprint with the request that authorises the session: that is what lets the portal tie its answer to the key, and refuse it under another one.
+
+      On a bastion the deposit is all the helper does. A backend runs `ob-ssh-principals` there — the helper that vouches the certificate against its bastion allowlist — and the fingerprint goes in on the same pass.
+    '
+
+    include platform.open-bastion.fingerprint-pipe
+    include platform.open-bastion.fingerprint-pipe.*
+
+    include platform.bastion.sshd
+    include platform.bastion.ssh_fp_spool
+    include platform.open-bastion.pam_openbastion
+
+    include platform.protected-zone.backend
+    include platform.protected-zone.backend.ob_ssh_principals
+    include platform.protected-zone.backend.fp_spool
+  }
+
+  /*
+   * The certificate minting pipe opened up: what the backend connection shows
+   * as one node. The hop tools ask for a certificate for an ephemeral key, the
+   * root daemon presents this host's token to the portal, and the ssh-ca plugin
+   * signs with the CA.
+   */
+  view certificate-minting-pipe {
+    title 'Certificate minting pipe'
+    description '
+      How a bastion mints the certificate it presents to a backend.
+
+      The unprivileged client writes its request into the socket, the root daemon behind it presents the host token to the portal, and the `ssh-ca` plugin signs the ephemeral public key with the CA. The certificate lands in tmpfs, next to the private half it belongs to, and it is short-lived by design: nothing is reused from one hop to the next.
+    '
+
+    include platform.bastion.certificate-minting-pipe
+    include platform.bastion.certificate-minting-pipe.*
+
+    include platform.bastion.end_user_commands
+    include platform.bastion.end_user_commands.*
+    include platform.bastion.bastion_token
+    include platform.bastion.hop_keypair
+    include platform.bastion.hop_certificate
+
+    include platform.central-authority.llng.portal
+    include platform.central-authority.llng.llng-plugins.pam-access
+    include platform.central-authority.llng.llng-plugins.ssh-ca
+    include platform.central-authority.ssh_ca
+
+    /* What the daemon links to do it. */
+    include libcurl
+    include json-c
+    include openssl
+  }
+
+  /*
+   * What answers while the portal is unreachable, and what does not.
+   */
+  view offline-cache {
+    title 'Offline cache'
+    description '
+      The caches that keep a host working while the portal is unreachable.
+
+      The NSS cache resolves a name, the authorization cache admits a session and an elevation, and the credential cache — a desktop workstation only — authenticates a password.
+
+      The authorization cache holds verdicts and account attributes, never a credential or a certificate: a fresh `sudo` proof, a hop certificate and an enrolment still need the portal, and a revocation reaches the host at its next online check, so a host that stays down keeps its grants until their lifetime runs out.
+    '
+
+    /* Where the verdicts, and the lifetimes that bound them, come from. */
+    include platform.central-authority.llng.portal
+    include platform.central-authority.llng.llng-plugins.pam-access
+
+    /* What asks, and what answers from a file. */
+    include platform.open-bastion.pam_openbastion
+    include platform.open-bastion.libnss_openbastion_so
+    include platform.open-bastion.ob_client
+
+    /* The caches of a server, and the one a desktop workstation keeps. */
+    include platform.bastion.nss_cache
+    include platform.bastion.auth_cache
+    include platform.bastion.force_online
+    include workstation.credential_cache
+
+    /* The same, on a backend. */
+    include platform.protected-zone.backend.backend_nss_cache
+    include platform.protected-zone.backend.backend_auth_cache
+    include platform.protected-zone.backend.backend_force_online
+  }
+
+  /* Every keystroke, and who keeps the receipts. */
+  view session-recording {
+    title 'Session recording'
+    description '
+      Session recording, and why only a bastion runs it.
+
+      Only the bastion records. The SSH daemon `sshd` starts the recorder through `ForceCommand`, the recorder frames the stream and hands it to the socket, one root sink per session writes the typescript and its metadata, and a timer then compresses and expires them.
+
+      A backend runs none of this chain.
+    '
+    include platform.bastion
+    include platform.bastion.sshd
+    include platform.bastion.recording-pipe
+    include platform.bastion.recording-pipe.*
+    include platform.bastion.sessions_dir
+    include platform.bastion.session_recorder_conf
+    include platform.bastion.ob-session-prune
+    include platform.bastion.ob-session-prune-bin
+    include platform.bastion.ob-session-prune-timer
+  }
+}

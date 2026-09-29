@@ -1,0 +1,108 @@
+views {
+
+  /*
+   * The scenarios other than the default one. Where `maximum-security-views.c4`
+   * shows a fleet that accepts certificates only, these show the three ways a
+   * host can be made to accept something else: an LLNG token in place of the
+   * SSH password, a bare SSH key with the portal still deciding, and the NSS
+   * lookup that makes an account the portal knows about visible to sshd before
+   * PAM is called. The scenarios themselves are described in
+   * `doc/security-scenarios/other-security-scenarios.rst`.
+   *
+   * The module that decides is the same on a bastion and on a backend -- it is
+   * modelled once, in `software.c4` -- so these views name the shared element
+   * and let the host that loads it say the rest.
+   */
+
+  dynamic view user-connects-with-a-token {
+    title 'Token only/User connects with an LLNG token'
+    description '
+      The scenario where a one-time token is the password.
+
+      The user asks the portal for a short-lived token, types it at the SSH prompt, and the bastion verifies it against the portal before the session opens. The verification consumes the token, so a copy of it is refused on a second attempt. The key still opens the connection; the token is what the portal asks for before the session is allowed.
+    '
+
+    include workstation
+    include platform
+    include platform.bastion
+    include platform.central-authority
+    include platform.open-bastion
+
+    workstation.user -> workstation.user_client 'opens the token page of the portal'
+    workstation.user_client -> platform.central-authority.llng.portal 'GET /pam, then POST /pam to generate it'
+    platform.central-authority.llng.portal -> platform.central-authority.llng_sessions 'checks the SSO session: the user is authenticated'
+    platform.central-authority.llng.portal -> platform.central-authority.llng.llng-plugins.pam-access 'generates a short-lived one-time token for that user'
+    platform.central-authority.llng.llng-plugins.pam-access -> platform.central-authority.llng.portal 'hands the token back'
+    platform.central-authority.llng.portal -> workstation.user_client 'returns {token, login, expires_in}'
+    workstation.user_client -> workstation.user 'the user keeps it for the SSH prompt'
+
+    workstation.user -> platform.bastion.sshd 'SSH with the token in place of a password'
+    platform.bastion.sshd -> platform.bastion.openbastion_pam_stack 'consults the PAM stack'
+    platform.bastion.openbastion_pam_stack -> platform.open-bastion.pam_openbastion 'loads the module'
+    platform.open-bastion.pam_openbastion -> platform.bastion.bastion_token 'presents the OIDC token'
+    platform.open-bastion.pam_openbastion -> platform.central-authority.llng.portal 'POST /pam/verify (the token)'
+    platform.central-authority.llng.portal -> platform.central-authority.llng.llng-plugins.pam-access 'routes the request to the plugin'
+    platform.central-authority.llng.llng-plugins.pam-access -> platform.central-authority.llng.portal 'the portal consumes the token and signs the verdict'
+    platform.central-authority.llng.portal -> platform.open-bastion.pam_openbastion 'returns the verdict'
+    platform.open-bastion.pam_openbastion -> platform.bastion.sso_jwks 'checks the signature and the bindings against the trust anchor'
+    platform.open-bastion.pam_openbastion -> platform.central-authority.llng.portal 'POST /pam/authorize (user, server group resolved from the client_id)'
+    platform.central-authority.llng.portal -> platform.central-authority.llng.llng-plugins.pam-access 'routes the request to the plugin'
+    platform.central-authority.llng.llng-plugins.pam-access -> platform.central-authority.ldap 'reads the identity, the groups and the rules'
+    platform.central-authority.llng.llng-plugins.pam-access -> platform.central-authority.llng.portal 'the portal signs the answer'
+    platform.central-authority.llng.portal -> platform.open-bastion.pam_openbastion 'returns the signed answer'
+    platform.open-bastion.pam_openbastion -> platform.bastion.auth_cache 'stores the answer, when the portal authorises offline use, for the TTL it gives'
+  }
+
+  dynamic view user-connects-with-an-ssh-key {
+    title 'SSH keys + LLNG authorization/User connects with an SSH key'
+    description '
+      The scenario where possession of the key is necessary but not sufficient.
+
+      `sshd` accepts the key, and the PAM account phase then asks the portal whether this user may open a session on this host. No token is involved, and the portal still makes the decision. It is also the scenario that stops working under maximum security, where the SSH daemon accepts no key that is not a certificate.
+    '
+
+    include workstation
+    include platform
+    include platform.bastion
+    include platform.central-authority
+    include platform.open-bastion
+
+    workstation.user -> workstation.user_keypair 'keeps the private half on the workstation'
+    workstation.user -> platform.bastion.sshd 'SSH with the key'
+    platform.bastion.sshd -> platform.bastion.openbastion_pam_stack 'consults the PAM stack'
+    platform.bastion.openbastion_pam_stack -> platform.open-bastion.pam_openbastion 'loads the module'
+    platform.open-bastion.pam_openbastion -> platform.bastion.bastion_token 'presents the OIDC token'
+    platform.open-bastion.pam_openbastion -> platform.central-authority.llng.portal 'POST /pam/authorize (user, server group resolved from the client_id)'
+    platform.central-authority.llng.portal -> platform.central-authority.llng.llng-plugins.pam-access 'routes the request to the plugin'
+    platform.central-authority.llng.llng-plugins.pam-access -> platform.central-authority.ldap 'reads the identity, the groups and the rules'
+    platform.central-authority.llng.llng-plugins.pam-access -> platform.central-authority.llng.portal 'the portal signs the answer'
+    platform.central-authority.llng.portal -> platform.open-bastion.pam_openbastion 'returns the signed answer'
+    platform.open-bastion.pam_openbastion -> platform.bastion.sso_jwks 'checks the signature and the bindings against the trust anchor'
+    platform.open-bastion.pam_openbastion -> platform.bastion.auth_cache 'stores the answer, when the portal authorises offline use, for the TTL it gives'
+  }
+
+  dynamic view nss-resolves-the-account {
+    title 'Account resolution/NSS resolves a user'
+    description '
+      The lookup that lets a session start at all.
+
+      `sshd` checks that the account exists before it calls PAM, and the account may exist only in the portal. `libnss_openbastion` answers that lookup: the library asks the portal for the user, and the passwd entry it returns is what lets the session continue to the PAM stack. This is how a user with no local account reaches a host at all, bastion or backend — and it is the first thing that stops working when the portal stays unreachable for longer than the NSS cache holds.
+    '
+
+    include platform
+    include platform.bastion
+    include platform.central-authority
+    include platform.open-bastion
+
+    platform.bastion.sshd -> platform.bastion.nsswitch_conf 'resolves the account before it calls PAM'
+    platform.bastion.nsswitch_conf -> platform.open-bastion.libnss_openbastion_so 'names openbastion for the passwd lookup'
+    platform.open-bastion.libnss_openbastion_so -> platform.bastion.nss_openbastion_conf 'reads the portal it asks, and the pin of its certificate'
+    platform.open-bastion.libnss_openbastion_so -> platform.bastion.bastion_token 'presents the OIDC token'
+    platform.open-bastion.libnss_openbastion_so -> platform.central-authority.llng.portal 'POST /pam/userinfo (the login name)'
+    platform.central-authority.llng.portal -> platform.central-authority.llng.llng-plugins.pam-access 'routes the request to the plugin'
+    platform.central-authority.llng.llng-plugins.pam-access -> platform.central-authority.ldap 'reads the identity and its exported attributes'
+    platform.central-authority.llng.llng-plugins.pam-access -> platform.central-authority.llng.portal 'the portal signs the answer'
+    platform.central-authority.llng.portal -> platform.open-bastion.libnss_openbastion_so 'returns the attributes, or nothing when the portal does not know the user'
+    platform.open-bastion.libnss_openbastion_so -> platform.bastion.sshd 'returns the passwd entry, so the session can continue to PAM'
+  }
+}

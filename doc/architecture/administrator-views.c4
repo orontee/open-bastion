@@ -1,0 +1,80 @@
+views {
+  dynamic view administrator-revokes-a-certificate {
+    title 'Administrator/Administrator revokes a certificate'
+    description '
+      The administrator revokes a certificate at the portal.
+
+      The `ssh-ca` plugin re-signs the revocation list with the CA key, and each host picks it up on its next refresh. The serial then stops being accepted, wherever the certificate is presented.
+    '
+
+    include workstation
+    include workstation.administrator
+    include platform
+    include platform.bastion
+    include platform.central-authority
+
+
+    workstation.administrator -> workstation.administrator_client 'opens the SSH administration page'
+    workstation.administrator_client -> platform.central-authority.llng.portal 'GET /ssh/admin'
+    platform.central-authority.llng.portal -> platform.central-authority.llng_sessions 'checks the administrator session: the user is authenticated'
+    platform.central-authority.llng.portal -> platform.central-authority.llng.llng-plugins.ssh-ca 'serves the page, subject to sshCaAdminRule'
+    workstation.administrator_client -> platform.central-authority.llng.portal 'POST /ssh/revoke (the serial)'
+    platform.central-authority.llng.portal -> platform.central-authority.llng.llng-plugins.ssh-ca 'revokes the certificate, and updates the revocation list'
+    platform.central-authority.llng.llng-plugins.ssh-ca -> platform.central-authority.ssh_ca 'signs the new KRL with the CA key'
+
+    platform.bastion.ob-krl-refresh-bin -> platform.central-authority.llng.portal 'GET /ssh/revoked'
+    platform.central-authority.llng.portal -> platform.central-authority.llng.llng-plugins.ssh-ca 'serves the KRL'
+    platform.central-authority.llng.llng-plugins.ssh-ca -> platform.central-authority.llng.portal 'hands the KRL back'
+    platform.central-authority.llng.portal -> platform.bastion.ob-krl-refresh-bin 'returns the KRL'
+    platform.bastion.ob-krl-refresh-bin -> platform.bastion.revoked_keys 'writes the KRL as revoked_keys'
+    platform.bastion.sshd -> platform.bastion.revoked_keys 'refuses the serial on the next connection'
+  }
+
+  dynamic view administrator-enrolls-the-bastion {
+    title 'Administrator/Administrator enrolls the bastion'
+    description '
+      The host has no credential until an administrator enrols it.
+
+      `ob-enroll` asks the portal for a device code, the administrator approves the request in the portal, and the token that comes back is what the host presents from then on. The enrolment is then verified with a signed call, so a host that cannot prove it holds the token is not enrolled. The approval is what binds the host to a device identity, and a backend allowlist is keyed on that identity rather than on a name or an address.
+    '
+
+    include workstation
+    include workstation.administrator
+    include platform
+    include platform.bastion
+    include platform.central-authority
+
+    workstation.administrator -> platform.open-bastion.ob_enroll 'runs ob-enroll on the bastion'
+    platform.open-bastion.ob_enroll -> platform.open-bastion.ob_client_jwt 'hands the client secret over on stdin (never argv)'
+    platform.open-bastion.ob_client_jwt -> platform.open-bastion.ob_enroll 'prints the client_secret_jwt assertion on stdout'
+    platform.open-bastion.ob_enroll -> curl 'POST /oauth2/device'
+    curl -> platform.central-authority.llng.portal 'POST /oauth2/device (a device code and a user code)'
+    platform.central-authority.llng.portal -> platform.central-authority.llng.llng-plugins.oidc-device-authorization 'creates the authorization'
+    platform.central-authority.llng.portal -> workstation.administrator 'shows the user code to approve'
+    workstation.administrator -> workstation.administrator_client 'opens the /device web page'
+    workstation.administrator_client -> platform.central-authority.llng.portal 'POST /device (approves the user code)'
+    platform.central-authority.llng.portal -> platform.central-authority.llng_sessions 'checks the administrator session: the user is authenticated'
+    platform.central-authority.llng.portal -> platform.central-authority.llng.llng-plugins.oidc-device-authorization 'binds the device to that account'
+    loop 'until administrator approves' {
+         platform.open-bastion.ob_enroll -> curl 'polls POST /oauth2/token'
+         curl -> platform.central-authority.llng.portal 'exchanges the device code'
+         platform.central-authority.llng.portal -> platform.open-bastion.ob_enroll 'returns the OIDC token'
+    }
+    platform.open-bastion.ob_enroll -> platform.bastion.bastion_token 'writes the tokens as the OIDC token'
+
+    /*
+     * The enrolment is not trusted until the host has answered once: ob-enroll
+     * sends a signed probe, and the answer comes back checked against the
+     * portal keys of this host.
+     */
+    platform.open-bastion.ob_enroll -> platform.open-bastion.ob_sign_lib 'sources it: it signs the probe, and checks the answer'
+    platform.open-bastion.ob_enroll -> curl 'POST /pam/authorize, to verify the enrollment'
+    curl -> platform.central-authority.llng.portal 'POST /pam/authorize (the signed probe)'
+    platform.central-authority.llng.portal -> platform.central-authority.llng.llng-plugins.pam-access 'routes the request to the plugin'
+    platform.central-authority.llng.llng-plugins.pam-access -> platform.central-authority.llng.portal 'the portal signs the answer'
+    platform.central-authority.llng.portal -> curl 'returns the signed answer'
+    platform.open-bastion.ob_sign_lib -> platform.open-bastion.ob_verify_response 'hands it the trust anchor and the answer'
+    platform.open-bastion.ob_verify_response -> platform.bastion.sso_jwks 'checks the answer against the keys this host holds'
+    platform.open-bastion.ob_sign_lib -> platform.open-bastion.ob_enroll 'reports whether the enrollment verified'
+  }
+}

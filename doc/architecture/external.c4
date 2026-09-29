@@ -1,0 +1,109 @@
+model {
+  libcurl = external-library {
+    #C
+    technology 'C library'
+    title 'libcurl'
+    summary 'Network transfer library'
+    link https://curl.se/libcurl/
+  }
+
+  json-c = external-library {
+    #C
+    technology 'C library'
+    title 'json-c'
+    summary 'JSON parsing and serialisation'
+    link https://github.com/json-c/json-c
+  }
+
+  openssl = external-library {
+    #C
+    technology 'C library'
+    title 'OpenSSL'
+    summary 'HMAC, JWS signatures and certificates'
+    link https://www.openssl.org/
+  }
+
+  curl = external-library {
+    #Bash
+    technology 'command-line tool'
+    title 'curl'
+    summary 'HTTP client used by the shell callers'
+    link https://curl.se/
+  }
+
+  libpam = external-library {
+    #C
+    technology 'PAM library'
+    title 'libpam'
+    summary 'Pluggable Authentication Modules'
+    link https://linux-pam.org/
+  }
+
+  /*
+   * The software of the host itself, and the only reader of the files
+   * open-bastion installs for it to obey. Each of these is the same on a
+   * bastion and on a backend -- the package installs the same configuration
+   * set on both -- so each is declared once, and reads this host's copy of its
+   * file on either role. What it does with the file is on the relationship,
+   * and on the file itself; nothing here is open-bastion software.
+   */
+  auditd = external-server {
+    technology 'audit subsystem'
+    title 'auditd'
+    summary 'Loads the rules and owns the log'
+
+    this .uses platform.bastion.configuration.audit_rules 'runs the kernel audit on what they select'
+    this .uses platform.protected-zone.backend.configuration.audit_rules 'runs the kernel audit on what they select'
+  }
+
+  systemd-logind = external-server {
+    technology 'systemd'
+    title 'systemd-logind'
+    summary 'Session and process containment'
+
+    this .uses platform.bastion.configuration.hardening_logind 'applies the containment to every session'
+    this .uses platform.protected-zone.backend.configuration.hardening_logind 'applies the containment to every session'
+  }
+
+  pam_limits = external-library {
+    technology 'PAM module'
+    title 'pam_limits'
+    summary 'Per-session resource limits'
+
+    this .uses platform.bastion.configuration.hardening_limits 'caps what one session may fork'
+    this .uses platform.protected-zone.backend.configuration.hardening_limits 'caps what one session may fork'
+  }
+
+  cron = external-server {
+    technology 'daemon'
+    title 'cron'
+    summary 'The scheduler the allowlist gates'
+    description '
+      Carries no open-bastion task: every periodic job of the package is a systemd timer (ob-heartbeat, ob-krl-refresh, ob-session-prune, ob-audit-rotate). The allowlist is there to deny crontab(1) to everyone else.
+    '
+
+    this .uses platform.bastion.configuration.hardening_cron_allow 'locks crontab(1) to these accounts'
+    this .uses platform.protected-zone.backend.configuration.hardening_cron_allow 'locks crontab(1) to these accounts'
+  }
+
+  atd = external-server {
+    technology 'daemon'
+    title 'atd'
+    summary 'The at(1) queue the allowlist gates'
+    description '
+      Same lockdown, and the hardening goes further: it masks and stops atd, so the queue is closed even for the accounts the allowlist names.
+    '
+
+    this .uses platform.bastion.configuration.hardening_at_allow 'locks the at(1) queue to these accounts'
+    this .uses platform.protected-zone.backend.configuration.hardening_at_allow 'locks the at(1) queue to these accounts'
+  }
+
+  logrotate = external-server {
+    technology 'logrotate'
+    title 'logrotate'
+    summary 'Rotation of the JSON audit log'
+
+    this .uses platform.bastion.configuration.logrotate_conf 'rotates the JSON audit log'
+    this .uses platform.protected-zone.backend.configuration.logrotate_conf 'rotates the JSON audit log'
+  }
+}

@@ -1,0 +1,83 @@
+model {
+
+  control-node = workstation {
+    technology 'workstation'
+
+    ob-builder = executable {
+      #Bash
+      technology 'shell script'
+      title 'ob-builder'
+
+      this .uses installer-sh-in
+      this .produces installer-sh
+      this .uses main-yml-in
+      this .produces main-yml
+    }
+
+    /*
+     * What applies the role file, once the builder has written it. It runs
+     * here, not on the hosts it configures.
+     */
+    ansible = external-component {
+      #YAML
+      technology 'Ansible'
+      title 'ansible'
+      summary 'Applies the generated role'
+
+      this .uses main-yml 'applies the generated role'
+      this .uses platform.bastion.configuration.bastion_id 'reads a bastion id, to write it into a backend allowlist'
+    }
+
+    installer-sh-in = file {
+      #Bash #template
+      technology 'Bash template'
+      title 'installer.sh.in'
+      summary 'Shell installer template'
+
+      style {
+        icon bootstrap:files
+      }
+    }
+
+    installer-sh = generated-file {
+      #Bash
+      technology 'Bash'
+      title 'installer.sh'
+      summary 'Shell installer'
+
+      style {
+        icon bootstrap:filetype-sh
+      }
+    }
+
+    main-yml-in = file {
+      #YAML #template
+      technology 'Ansible template'
+      title 'main.yml.in'
+      summary 'Ansible task template'
+
+      style {
+        icon bootstrap:files
+      }
+    }
+
+    main-yml = generated-file {
+      #YAML
+      technology 'Ansible'
+      title 'main.yml'
+      summary 'Ansible task'
+
+      style {
+        icon bootstrap:filetype-yml
+      }
+    }
+  }
+
+  /* Both artefacts are for an operator: one is run on each host it installs,
+   * the other is applied by the control node. The installer also writes the
+   * client configuration of the host it runs on, out of its inventory. */
+  workstation.administrator .uses control-node.installer-sh 'runs it on each host it installs'
+  workstation.administrator .uses platform.open-bastion.ob_post_upgrade 'runs it on each host after a package upgrade'
+  control-node.installer-sh .produces platform.bastion.configuration.openbastion_conf 'writes it from the inventory it carries'
+  control-node.installer-sh .produces platform.protected-zone.backend.configuration.openbastion_conf 'writes it from the inventory it carries'
+}

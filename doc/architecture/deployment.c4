@@ -1,0 +1,99 @@
+deployment {
+
+  /*
+   * What lands on each role.
+   *
+   * `ob-bastion-setup` installs the same package everywhere: the components
+   * under `platform.open-bastion` are deployed on a bastion and on a backend
+   * alike, and they are modelled once for that reason. Each host loads them
+   * through its own PAM stack and `nsswitch.conf`, and what makes the two roles
+   * different is what surrounds them -- the hop certificate and the session
+   * recorder only a bastion runs, the vouching chain only a backend carries.
+   *
+   * Only what distinguishes the roles is instantiated. A host's full unit and
+   * file set is drawn where it lives, in `bastion-configuration-files` and
+   * `backend-configuration-files`.
+   */
+
+  bastion-role = host 'Bastion' {
+    /* The package, the same on both roles. */
+    instanceOf platform.open-bastion.pam_openbastion
+    instanceOf platform.open-bastion.libnss_openbastion_so
+    instanceOf platform.open-bastion.fingerprint-pipe
+
+    /* What loads them here, and where the fingerprint of the session lands. */
+    instanceOf platform.bastion.configuration.openbastion_pam_stack
+    instanceOf platform.bastion.configuration.nsswitch_conf
+    instanceOf platform.bastion.ssh_fp_spool
+
+    /* What only a bastion runs: the hop, and the recording. */
+    instanceOf platform.bastion.certificate-minting-pipe
+    instanceOf platform.bastion.recording-pipe
+    instanceOf platform.bastion.end_user_commands
+    instanceOf platform.bastion.configuration.session_recorder_conf
+    instanceOf platform.bastion.configuration.ssh_proxy_conf
+
+    /* Its own cache, at /var/cache/open-bastion/auth. */
+    instanceOf platform.bastion.auth_cache
+  }
+
+  backend-role = host 'Backend' {
+    /* The package, the same on both roles. */
+    instanceOf platform.open-bastion.pam_openbastion
+    instanceOf platform.open-bastion.libnss_openbastion_so
+    instanceOf platform.open-bastion.fingerprint-pipe
+
+    /* What loads them here, and where the fingerprint of the session lands. */
+    instanceOf platform.protected-zone.backend.configuration.openbastion_pam_stack
+    instanceOf platform.protected-zone.backend.configuration.nsswitch_conf
+    instanceOf platform.protected-zone.backend.fp_spool
+
+    /* What only a backend carries: the vouching chain. */
+    instanceOf platform.protected-zone.backend.ob_ssh_principals
+    instanceOf platform.protected-zone.backend.configuration.allowed_bastions
+
+    /* Its own cache, at /var/cache/open-bastion/auth. */
+    instanceOf platform.protected-zone.backend.backend_auth_cache
+  }
+}
+
+views {
+
+  deployment view deployment-roles {
+    title 'Deployment/What lands on each role'
+    description '
+      The bastion and backends share the same package, DEB or RPM.
+
+      The scripts that configure and maintain a host — `ob-bastion-setup`, `ob-enroll`, `ob-post-upgrade` — are shared components too: the same file runs on either role, and takes its role from the host it runs on.
+
+      Bastion specific: the hop CLI `ob-ssh` and the session recorder.
+
+      Backends specific: `ob-ssh-principals`, the helper that checks the bastion allowlist.
+    '
+
+    include *
+
+    /* The pipes are one node each here; open one for its diagram. */
+    include bastion-role.certificate-minting-pipe with {
+      navigateTo certificate-minting-pipe
+    }
+    include bastion-role.recording-pipe with {
+      navigateTo session-recording
+    }
+    include bastion-role.fingerprint-pipe with {
+      navigateTo public-key-fingerprint-pipe
+    }
+    include backend-role.fingerprint-pipe with {
+      navigateTo public-key-fingerprint-pipe
+    }
+    style bastion-role.recording-pipe {
+      shape queue
+    }
+    style bastion-role.fingerprint-pipe {
+      shape queue
+    }
+    style backend-role.fingerprint-pipe {
+      shape queue
+    }
+  }
+}

@@ -1,0 +1,105 @@
+model {
+
+  /*
+   * Who talks HTTP to the portal, and with what.
+   *
+   * Every request to the portal leaves one of the elements below: either
+   * `ob_client`, the C client compiled into the PAM module and the cert
+   * daemon, or a shell caller that goes through `curl` with the request-signing
+   * library. Nothing else reaches the portal -- the plugins never call back
+   * into a bastion, so the direction of every arrow in the dynamic views is
+   * outbound.
+   *
+   * Every request ends on the portal, never on a plugin: which plugin answers
+   * an endpoint is decided inside the authority, and drawn there. The endpoint
+   * path is in the label, and named per client as it is called.
+   */
+  extend platform.bastion {
+
+    ob_bastion_id = executable {
+      #Bash
+      technology 'shell script'
+      title 'ob-bastion-id'
+      summary 'Prints the bastion id a backend allows'
+
+      this .uses platform.open-bastion.ob_sign_lib
+      this .uses platform.bastion.configuration.openbastion_conf
+
+      this .produces configuration.bastion_id 'keeps it, for the operator to paste into an allowlist'
+    }
+
+    end_user_commands = zone {
+      title 'End user commands'
+      summary 'ob-ssh, ob-scp, ob-sftp'
+
+      style {
+        multiple true
+      }
+
+      /* The bastion-side hop: the user runs ob-ssh, which asks the local cert
+       * daemon for a certificate and re-originates the connection with it. */
+      ob_ssh = executable {
+        #Bash
+        technology 'shell script'
+        title 'ob-ssh'
+        summary 'Connects to a backend with a minted certificate'
+        link https://github.com/linagora/open-bastion/blob/main/doc/references/bastion-cert-vouching.rst
+  
+        this .uses certificate-minting-pipe 'asks it for a certificate for the ephemeral public half'
+        this .uses ssh_proxy_conf
+      }
+  
+      ob_scp = executable {
+        #Bash
+        technology 'shell script'
+        title 'ob-scp'
+        summary 'Copies to a backend with a minted certificate'
+  
+        this .uses certificate-minting-pipe 'asks it for a certificate for the ephemeral public half'
+      }
+  
+      ob_sftp = executable {
+        #Bash
+        technology 'shell script'
+        title 'ob-sftp'
+        summary 'Transfers to a backend with a minted certificate'
+  
+        this .uses certificate-minting-pipe 'asks it for a certificate for the ephemeral public half'
+      }
+    }
+    /* ── what each client asks the plugins for ──────────────────────────── */
+
+    platform.open-bastion.ob_client .requests platform.central-authority.llng.portal 'POST /pam/authorize, /pam/verify, /pam/userinfo'
+    platform.open-bastion.ob_client .requests platform.central-authority.llng.portal 'POST /pam/bastion-cert'
+    platform.open-bastion.ob_client .requests platform.central-authority.llng.portal 'POST /pam/heartbeat'
+
+    ob-heartbeat-bin .requests platform.central-authority.llng.portal 'POST /pam/heartbeat'
+    ob-heartbeat-bin .uses platform.open-bastion.ob_sign_lib
+
+    ob-session-monitor-bin .requests platform.central-authority.llng.portal 'POST /pam/userinfo'
+    ob-session-monitor-bin .uses platform.open-bastion.ob_sign_lib
+
+    ob_bastion_id .requests platform.central-authority.llng.portal 'POST /pam/bastion-token, /pam/whoami'
+    ob-heartbeat-bin .uses ob_bastion_id 'runs it, so the id survives on disk'
+
+    platform.open-bastion.ob_enroll .requests platform.central-authority.llng.portal 'POST /oauth2/device (the device grant, RFC 8628)'
+    platform.open-bastion.ob_enroll .requests platform.central-authority.llng.portal 'POST /oauth2/token (the device_code grant)'
+    platform.open-bastion.ob_enroll .requests platform.central-authority.llng.portal 'POST /pam/authorize (the probe that verifies the enrolment)'
+
+    ob-krl-refresh-bin .requests platform.central-authority.llng.portal 'GET /ssh/revoked (KRL)'
+    ob-krl-refresh-bin .uses curl
+
+    platform.open-bastion.ob_bastion_setup .requests platform.central-authority.llng.portal 'GET /ssh/ca'
+    platform.open-bastion.ob_bastion_setup .uses curl
+
+    platform.open-bastion.ob_sign_lib .requests platform.central-authority.llng.portal 'GET /jwks.json (trust anchor)'
+  }
+
+  /*
+   * The user's own request, before any connection: a certificate for their
+   * public key. It is authenticated by the portal session, not by a secret on
+   * the workstation, and it is the only request in the model that leaves from
+   * outside the platform.
+   */
+  workstation.user_client .requests platform.central-authority.llng.portal 'POST /ssh/sign (their own public key, server group)'
+}

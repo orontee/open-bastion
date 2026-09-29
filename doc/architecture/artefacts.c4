@@ -1,0 +1,75 @@
+model {
+
+  /*
+   * What loads the two shared objects on each host, and the material of a hop.
+   *
+   * The objects themselves are modelled once, in `software.c4`, because
+   * `ob-bastion-setup` installs the same package on a bastion and on a backend.
+   * They are the only parts of open-bastion a host's own daemons enter through:
+   * sshd, sudo and login never exec anything of ours to authenticate a user,
+   * they resolve a name or call PAM. Everything else runs from a unit.
+   */
+  extend platform.bastion {
+
+    /* What enters through them, on the bastion. */
+    openbastion_pam_stack .uses platform.open-bastion.pam_openbastion 'loads the module'
+    nsswitch_conf .uses platform.open-bastion.libnss_openbastion_so 'loads the library'
+    sshd .uses nsswitch_conf 'resolves the account before it calls PAM'
+
+    /*
+     * The hop's material: the certificate ob-ssh writes next to the ephemeral
+     * key it was signed for, in a tmpfs directory. It is the one artefact of
+     * the chain that never reaches a disk.
+     */
+    hop_keypair = file {
+      technology 'OpenSSH key pair'
+      title 'Ephemeral key pair'
+      summary '${XDG_RUNTIME_DIR:-/dev/shm}/ob-hop.XXXXXX/id, id.pub'
+      description '
+        Generated per hop by ssh-keygen into the same tmpfs directory as the certificate. Only its public half is ever sent: it goes to the cert daemon, and the certificate that comes back is signed for it. The private half never leaves the bastion and is removed with the directory.
+      '
+
+      style {
+        multiple true
+        icon bootstrap:key-fill
+      }
+
+      ob_ssh .produces hop_keypair 'generates it in tmpfs'
+      ob_ssh .uses hop_keypair 'reads the public half, and hands both paths to ssh'
+    }
+
+    hop_certificate = file {
+      technology 'OpenSSH certificate'
+      title 'Short-lived certificate'
+      summary '${XDG_RUNTIME_DIR:-/dev/shm}/ob-hop.XXXXXX/id-cert.pub'
+      description '
+        Minted per hop by the portal, then written by ob-ssh in a tmpfs directory alongside the ephemeral key it was signed for. It lives in memory only, its private half never leaves the bastion, and the directory is removed when the connection ends. The backend accepts it because the CA signed it and its serial is not in the KRL.
+      '
+
+      style {
+        multiple true
+        icon bootstrap:patch-check
+      }
+
+      metadata {
+        validity '120 s (pamAccessBastionCertTtl, its default)'
+        algorithms 'ed25519, ecdsa, sk-ed25519, sk-ecdsa, rsa (sshCaAllowedKeyTypes)'
+      }
+
+      ob_ssh .produces hop_certificate 'writes it into tmpfs'
+      ob_ssh .uses hop_certificate 'passes the certificate to ssh as CertificateFile'
+
+      hop_certificate .uses hop_keypair 'signed for its public half'
+    }
+
+    platform.central-authority.ssh_ca .produces hop_certificate 'signs it'
+  }
+
+  /* A backend loads the same two objects, through its own entry points. */
+  extend platform.protected-zone.backend {
+
+    platform.protected-zone.backend.configuration.openbastion_pam_stack .uses platform.open-bastion.pam_openbastion 'loads the same module the bastion loads'
+    platform.protected-zone.backend.configuration.nsswitch_conf .uses platform.open-bastion.libnss_openbastion_so 'loads the same library the bastion loads'
+    platform.protected-zone.backend.backend_sshd .uses platform.protected-zone.backend.configuration.nsswitch_conf 'resolves the account before it calls PAM'
+  }
+}

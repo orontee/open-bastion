@@ -1,0 +1,340 @@
+model {
+
+  /*
+   * The shared components of the package, modelled once.
+   *
+   * `ob-bastion-setup` installs the same package on a bastion and on a backend,
+   * and these are the artefacts it lands identically on both: the two shared
+   * objects, the executables and the shell toolkit that drive them, and the
+   * fingerprint pipe. What the package installs *because of* the role -- the
+   * entry points, the units, the daemons of a host -- stays with the host that
+   * carries it, as does every configuration file: see `deployment.c4` for the
+   * role matrix and `configuration.c4` for the files.
+   */
+  extend platform {
+
+    open-bastion = zone {
+      technology 'composite'
+      title 'Open Bastion shared components'
+
+      pam_openbastion = executable {
+        #C
+        technology 'ELF shared object'
+        title 'pam_openbastion.so'
+        summary 'PAM authentication module'
+        description '
+          The PAM module.
+
+          Loaded by the stack of every service that must authenticate or authorise: `sshd`, `sudo`, `sudo -i`, `systemd-user`, the desktop greeter. It holds no configuration of its own: it reads the `openbastion.conf` of the host it is loaded on, calls the portal through `ob_client`, and reads the fingerprint the SSH session deposited.
+        '
+
+        pam_openbastion .uses ob_client
+        pam_openbastion .uses ob_jws
+        pam_openbastion .uses ob_cert_proto
+
+        /*
+         * What the built object links, whatever compilation units are inside
+         * it. `libcurl` is how it reaches the portal, `json-c` how it reads the
+         * answers, `openssl` how it signs the request and checks the answer.
+         */
+        pam_openbastion .uses libpam 'calls the PAM API: items, the user, the environment, and the log'
+        pam_openbastion .uses libcurl 'posts to the portal with it'
+        pam_openbastion .uses json-c 'parses the answers with it'
+        pam_openbastion .uses openssl 'signs the requests, and checks the signatures'
+
+        /*
+         * What it reads on each host. One element here, two files there: each
+         * host carries its own copy, and the same module reads whichever one
+         * it is loaded on.
+         */
+        pam_openbastion .uses platform.bastion.configuration.openbastion_conf 'reads the configuration of the host it is loaded on'
+        pam_openbastion .uses platform.protected-zone.backend.configuration.openbastion_conf 'reads the configuration of the host it is loaded on'
+        pam_openbastion .uses platform.bastion.configuration.service_accounts_conf 'reads the accounts allowed to skip the portal'
+        pam_openbastion .uses platform.protected-zone.backend.configuration.service_accounts_conf 'reads the accounts allowed to skip the portal'
+        pam_openbastion .uses platform.bastion.auth_cache 'stores the answer of the session, and reads it back while the portal is unreachable'
+        pam_openbastion .uses platform.bastion.force_online 'refuses to answer from the cache while it exists'
+        pam_openbastion .uses platform.protected-zone.backend.backend_force_online 'refuses to answer from the cache while it exists'
+        pam_openbastion .uses platform.protected-zone.backend.backend_auth_cache 'stores the answer of the elevation'
+        pam_openbastion .uses workstation.credential_cache 'consumed while the portal is unreachable'
+        pam_openbastion .uses platform.bastion.ssh_fp_spool 'reads the drop deposited for this session'
+        pam_openbastion .uses platform.protected-zone.backend.fp_spool 'reads the drop deposited when the session was opened'
+
+        /*
+         * What its own units do, seen from the object that ships them: it
+         * presents the token of the host it is loaded on, checks the signed
+         * answers against that host's keys, and reaches the portal.
+         */
+        pam_openbastion .uses platform.bastion.configuration.bastion_token 'presents the OIDC token of the host it is loaded on'
+        pam_openbastion .uses platform.protected-zone.backend.configuration.token 'presents the OIDC token of the host it is loaded on'
+        pam_openbastion .uses platform.bastion.configuration.sso_jwks 'checks the signed answer against these keys'
+        pam_openbastion .uses platform.protected-zone.backend.configuration.sso_jwks 'checks the signed answer against these keys'
+        pam_openbastion .requests platform.central-authority.llng.portal 'POST /pam/authorize, /pam/verify, /pam/userinfo'
+      }
+
+      libnss_openbastion_so = executable {
+        #C
+        technology 'ELF shared object'
+        title 'libnss_openbastion.so'
+        summary 'NSS user resolution'
+        description '
+          The NSS library.
+
+          Loaded by every process that resolves a name (`getpwnam`, `getpwuid`, `initgroups`), so a user the directory knows exists locally before any session opens: the PAM module then finds a passwd entry, and a home, without asking the portal twice.
+        '
+
+        this .uses ob_jws
+        this .uses libcurl 'asks the portal for the account with it'
+        this .uses json-c 'reads the answer with it'
+        this .uses openssl 'checks the signature of the answer with it'
+
+        this .uses platform.bastion.configuration.nss_openbastion_conf 'reads the portal it asks, and the pin of its certificate'
+        this .uses platform.protected-zone.backend.configuration.nss_openbastion_conf 'reads the portal it asks, and the pin of its certificate'
+
+        this .uses platform.bastion.configuration.bastion_token 'presents the OIDC token of the host it is loaded on'
+        this .uses platform.protected-zone.backend.configuration.token 'presents the OIDC token of the host it is loaded on'
+
+        this .uses platform.bastion.nss_cache 'stores the lookups it answers, and serves them while the portal is unreachable'
+        this .uses platform.protected-zone.backend.backend_nss_cache 'stores the lookups it answers, and serves them while the portal is unreachable'
+
+        this .requests platform.central-authority.llng.portal 'POST /pam/userinfo'
+      }
+
+      ob_cert_proto = component {
+        #C
+        technology 'compilation unit'
+        title 'ob_cert_proto'
+        summary 'Utilities to protect against buffer overflows and malformed inputs'
+      }
+
+      ob_jws = component {
+        #C
+        technology 'compilation unit'
+        title 'ob_jws'
+        summary 'JWS verification and JWKS handling'
+        description '
+          Checks the portal answers the host decides on: the issuer, the audience, the endpoint, the request digest and nonce, and the key use of the JWKS entry that signed them.
+        '
+      }
+
+      ob_client = component {
+        #C #HTTP
+        technology 'compilation unit'
+        title 'ob_client'
+        summary 'HTTP client that talks to the LemonLDAP::NG Portal'
+        description '
+          It consumes the `/pam/*` endpoints. It has the hability to sign requests with HMAC-SHA256.
+        '
+
+        it .requests central-authority.llng.portal
+
+        /*
+         * It loads the portal keys of the host it runs on -- `ob_jws` is what
+         * turns the file into a keyset -- and checks every signed answer
+         * against them.
+         */
+        it .uses platform.bastion.configuration.sso_jwks 'checks the answers it gets against these keys'
+        it .uses platform.protected-zone.backend.configuration.sso_jwks 'checks the answers it gets against these keys'
+      }
+
+      /*
+       * The shell toolkit of the package, and the client an administrator runs
+       * to enrol a host. Installed on both roles and speaking to the portal the
+       * same way on each: one artefact here, and whatever it touches named on
+       * the file itself, per host.
+       */
+      ob_sign_lib = executable {
+        #Bash
+        technology 'Bash'
+        title 'ob-sign-lib.sh'
+        summary '/usr/lib/open-bastion/ob-sign-lib.sh'
+        description '
+          Signs the request (HMAC-SHA256 over method, path, timestamp, nonce and body) and checks the answer against the JWKS when `response_signing` is on. A shell caller that cannot load it sends nothing but the unsigned call, and only when signing is off.
+        '
+
+        ob_sign_lib .uses ob_sign_request
+        ob_sign_lib .uses ob_verify_response
+        ob_sign_lib .uses curl
+      }
+
+      ob_sign_request = executable {
+        #C
+        technology 'ELF executable'
+        title 'ob-sign-request'
+        summary 'Signs one portal request'
+        metadata {
+          man-page true
+        }
+
+        this .uses openssl 'signs the request with it'
+      }
+
+      ob_verify_response = executable {
+        #C
+        technology 'ELF executable'
+        title 'ob-verify-response'
+        summary 'Verifies a signed portal answer against the JWKS'
+        metadata {
+          man-page true
+        }
+
+        this .uses ob_jws
+        this .uses json-c 'reads the answer and the keyset with it'
+        this .uses openssl 'checks the signature with it'
+
+        /*
+         * The keys it checks an answer against are the host's own copy of the
+         * file: the same helper runs on a bastion and on a backend.
+         */
+        this .uses platform.bastion.configuration.sso_jwks 'verifies a signed answer against these keys'
+        this .uses platform.protected-zone.backend.configuration.sso_jwks 'verifies a signed answer against these keys'
+      }
+
+      ob_client_jwt = executable {
+        #C
+        technology 'ELF executable'
+        title 'ob-client-jwt'
+        summary 'Builds the client_secret_jwt assertion (RFC 7523)'
+        description '
+          Keeps the OIDC client secret out of argv, where /proc/<pid>/cmdline would expose it to every local user (#256).
+        '
+
+        this .uses json-c 'builds the assertion with it'
+        this .uses openssl 'HMAC-signs the assertion with it'
+      }
+
+      /*
+       * The fingerprint pipe, as one node: the unprivileged depositor, the
+       * socket it writes into, and the root sink behind the socket. The same
+       * chain on both roles -- each host keeps its own spool.
+       */
+      fingerprint-pipe = component {
+        technology 'socket-activated pipe'
+        title 'Public key fingerprint pipe'
+
+        style {
+          shape queue
+        }
+
+        ob_fp_submit = executable {
+          #C
+          technology 'ELF executable'
+          title 'ob-fp-submit'
+          summary 'Deposits the SSH fingerprint of a session'
+          description '
+            Run by the `AuthorizedPrincipalsCommand` helper of the host, unprivileged: it writes the fingerprint into the socket, and the daemon behind it, not this process, decides where the drop lands (#249).
+          '
+
+          this .uses ob-fp-socket 'hands the fingerprint over'
+        }
+
+        ob-fp-socket = systemd-unit {
+          #socket
+          title 'ob-fp.socket'
+          summary 'SSH fingerprint deposit socket'
+          description '
+            `/run/open-bastion/ssh-fp.sock`, `Accept=yes`.
+
+            The pipe exists because OpenSSH exports no key to PAM at `pam_acct_mgmt`: the spool this socket feeds is the only way the module learns which key opened the session.
+          '
+
+          ob-fp-socket .triggers ob-fp 'socket-activates'
+        }
+
+        ob-fp = systemd-template-unit {
+          title 'ob-fp'
+          summary 'SSH fingerprint sink (per-deposit)'
+
+          metadata {
+            user 'root'
+          }
+
+          ob-fp-daemon = executable {
+            #C
+            technology 'ELF executable'
+            title 'ob-fp-daemon'
+            summary 'Writes the drop, as root'
+
+            metadata {
+              man-page true
+            }
+
+            this .produces platform.bastion.ssh_fp_spool 'writes the drop, as root'
+            this .produces platform.protected-zone.backend.fp_spool 'writes the drop, as root'
+          }
+        }
+      }
+
+      ob_bastion_setup = executable {
+        #Bash
+        technology 'shell script'
+        title 'ob-bastion-setup'
+        summary 'Deployment and re-configuration entry point'
+        description '
+          The one installer the package ships: it takes the role from the name it is called under or from `--node-role`, and writes the configuration of the host it runs on — the PAM stacks, the sshd drop-in, the trusted CA key, the JWKS, and the hardening files. It reads no secret, and every file it writes carries a decision of this host, so it runs once per host rather than being copied between them.
+        '
+
+        this .produces platform.bastion.configuration.openbastion_pam_stack
+        this .produces platform.bastion.configuration.sshd_dropin
+        this .produces platform.bastion.configuration.session_recorder_conf
+        this .produces platform.bastion.configuration.ssh_proxy_conf
+        this .produces platform.bastion.configuration.nsswitch_conf
+        this .produces platform.bastion.configuration.open_bastion_ca_pub
+        this .produces platform.bastion.configuration.hardening_logind
+        this .produces platform.bastion.configuration.hardening_limits
+        this .produces platform.bastion.configuration.hardening_at_allow
+        this .produces platform.bastion.configuration.hardening_cron_allow
+        this .produces platform.bastion.configuration.audit_rules
+        this .produces platform.bastion.configuration.sso_jwks
+
+        this .produces platform.protected-zone.backend.configuration.sshd_dropin
+        this .produces platform.protected-zone.backend.configuration.nsswitch_conf
+        this .produces platform.protected-zone.backend.configuration.allowed_bastions
+        this .produces platform.protected-zone.backend.configuration.openbastion_pam_stack
+        this .produces platform.protected-zone.backend.configuration.open_bastion_ca_pub
+        this .produces platform.protected-zone.backend.configuration.audit_rules
+        this .produces platform.protected-zone.backend.configuration.hardening_logind
+        this .produces platform.protected-zone.backend.configuration.hardening_limits
+        this .produces platform.protected-zone.backend.configuration.hardening_at_allow
+        this .produces platform.protected-zone.backend.configuration.hardening_cron_allow
+        this .produces platform.protected-zone.backend.configuration.sso_jwks
+      }
+
+      ob_post_upgrade = executable {
+        #Bash
+        technology 'shell script'
+        title 'ob-post-upgrade'
+        summary 'Finishes a package upgrade on a host'
+        description '
+          Never re-enrols, and never edits a file that carries a decision: it replaces the cron jobs of the older packages with the timers of this one, repairs the `%t %k` tokens of the helper its own sshd drop-in names, and fixes the login shell of the SSO users.
+        '
+
+        this .uses platform.bastion.configuration.openbastion_conf 'reads the mode of the host it runs on'
+        this .uses platform.protected-zone.backend.configuration.openbastion_conf 'reads the mode of the host it runs on'
+
+        this .produces platform.bastion.configuration.sshd_dropin 'repairs the tokens of the helper it names'
+        this .produces platform.protected-zone.backend.configuration.sshd_dropin 'repairs the tokens of the helper it names'
+        this .produces platform.bastion.configuration.nss_openbastion_conf 'appends the block that forces the login shell'
+        this .produces platform.protected-zone.backend.configuration.nss_openbastion_conf 'appends the block that forces the login shell'
+      }
+
+      ob_enroll = executable {
+        #Bash
+        technology 'shell script'
+        title 'ob-enroll'
+        summary 'Enrols a host with the portal (OIDC device grant)'
+        description '
+          What an administrator runs on a host to enrol it. The same script on either role: it asks the portal for a device code, keeps the token it gets back in the token file of this host, and then has the enrolment verified with a signed call.
+        '
+
+        this .uses ob_client_jwt
+        this .uses ob_sign_lib
+        this .uses curl
+        this .uses platform.bastion.configuration.openbastion_conf 'reads the configuration of the host it is run on'
+        this .uses platform.protected-zone.backend.configuration.openbastion_conf 'reads the configuration of the host it is run on'
+
+        this .produces platform.bastion.configuration.bastion_token 'keeps the token of this host'
+        this .produces platform.protected-zone.backend.configuration.token 'keeps the token of this host'
+      }
+    }
+  }
+}

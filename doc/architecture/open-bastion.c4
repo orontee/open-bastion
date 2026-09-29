@@ -1,0 +1,138 @@
+model {
+
+  /*
+   * The bastion host: the units only it runs -- minting the hop certificate,
+   * receiving the SSH fingerprints, recording the sessions -- and the cache it
+   * keeps.
+   *
+   * The software it loads is modelled once, in `software.c4`: a backend runs
+   * the same package, so the two shared objects and their compilation units are
+   * not declared a second time here.
+   */
+  extend platform {
+    bastion = server {
+      technology 'Linux server'
+      title 'Bastion'
+
+      style {
+        icon bootstrap:shield-lock
+      }
+
+      bastion .connects protected-zone.backend 'connects user (as a hop)'
+
+      /*
+       * The request leaves the shared `ob_client` from `software.c4`; this is
+       * the same call stated at the host level, which is the grain the context
+       * views read at.
+       */
+      it .requests platform.central-authority.llng.portal 'asks the portal to authorise its sessions and its elevations'
+
+      /*
+       * Certificate minting, as one node: the unprivileged client a hop tool
+       * runs, the socket it writes into, and the root daemon that asks the
+       * portal. A bastion mints one certificate per connection it opens to a
+       * backend.
+       */
+      certificate-minting-pipe = component {
+        technology 'socket-activated pipe'
+        title 'Certificate minting pipe'
+
+        style {
+          shape queue
+        }
+
+        ob_cert_request = executable {
+          #C
+          technology 'ELF executable'
+          title 'ob-cert-request'
+          summary 'Unprivileged client of the certificate socket'
+          description '
+            Writes the four-line request to `cert.sock` and prints the answer. It carries no privilege and no secret: the daemon takes the user from the connection SO_PEERCRED.
+          '
+
+          this .uses ob-cert-socket
+        }
+
+        ob-cert-socket = systemd-unit {
+          #socket
+          title 'ob-cert.socket'
+          summary 'Certificate minting socket'
+          description '
+            `/run/open-bastion/cert.sock`, `Accept=yes`.
+
+            Enabling it is what replaced the `ob-bastion-cert-helper` sudoers bridge: the request comes from an unprivileged client (`ob-cert-request`) and the daemon takes the user from SO_PEERCRED.
+          '
+
+          ob-cert-socket .triggers ob-cert 'socket-activates'
+        }
+
+        ob-cert = systemd-template-unit {
+
+          title 'ob-cert'
+          summary 'Certificate minting (per-connection)'
+
+          metadata {
+            user 'root'
+          }
+
+          ob-cert-daemon = executable {
+            #C
+            technology 'ELF executable'
+            title 'ob-cert-daemon'
+
+            metadata {
+              man-page true
+            }
+
+            this .uses platform.open-bastion.ob_cert_proto
+            this .uses libcurl 'asks the portal for the certificate with it'
+            this .uses json-c 'reads the answer with it'
+            this .uses openssl 'signs the certificate request with it'
+          }
+        }
+      }
+
+      auth_cache = file {
+        technology 'AES-256-GCM encrypted cache'
+        title 'Authorization cache'
+        summary '/var/cache/open-bastion/auth'
+        description '
+          Written by the account phase once the portal has answered, for the TTL the answer carries and only when it allows offline use. Read only when the portal cannot be reached: see the offline diagrams.
+        '
+        style {
+          multiple true
+        }
+
+        metadata {
+          ttl 'from the portal (pamAccessOfflineTtl, 24 h when the answer carries none)'
+        }
+      }
+
+      nss_cache = file {
+        technology 'file cache'
+        title 'NSS cache'
+        summary '/var/cache/nss_llng'
+        description '
+          The lookups `libnss_openbastion.so` has answered, so a name resolves while the portal is unreachable. An entry older than `cache_ttl` is deleted the moment it is read rather than served, so the outage buffer ends in a cliff, and only root fills it: the module reaches the portal with the server token, which is root-only.
+        '
+        style {
+          multiple true
+        }
+
+        metadata {
+          ttl '300 s by default (cache_ttl, up to 86400 s)'
+        }
+      }
+
+      force_online = file {
+        technology 'operator flag'
+        title 'force_online'
+        summary '/etc/open-bastion/force_online'
+        description '
+          What an operator creates to stop the authorization cache being consulted: empty, for every user, or listing the names it must not answer for. Root only.
+        '
+      }
+
+    }
+  }
+}

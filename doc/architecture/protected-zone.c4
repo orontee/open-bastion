@@ -1,0 +1,124 @@
+model {
+  extend platform {
+    protected-zone = zone {
+      technology 'protected network'
+      title 'Protected zone'
+      style {
+        color green
+      }
+      backend = server {
+        technology 'Linux server'
+        title 'Backend'
+        style {
+         multiple true
+        }
+
+        /*
+         * The request leaves the shared `ob_client` from `software.c4`; this is
+         * the same call stated at the host level, which is the grain the context
+         * views read at.
+         */
+        it .requests platform.central-authority.llng.portal 'asks the portal to authorise its sessions and its elevations'
+
+        /*
+         * A backend runs the same two shared objects as the bastion: they are
+         * modelled once, in `software.c4`, and this host enters them through
+         * its own PAM stack and `nsswitch.conf`. What is declared here is what
+         * this host carries on its own -- its caches, its spool, its files --
+         * because a backend is patched and administered on its own schedule.
+         */
+
+        backend_sshd = external-server {
+          technology 'OpenSSH'
+          title 'sshd'
+          summary 'OpenSSH server, verifies the certificate the bastion mints'
+          description '
+            Accepts a connection only with a certificate the ssh-ca plugin signed for this backend group, refuses one whose serial is in the KRL, and consults PAM for the account.
+          '
+
+          this .uses platform.protected-zone.backend.configuration.openbastion_pam_stack
+          this .uses platform.protected-zone.backend.configuration.open_bastion_ca_pub
+          this .uses platform.protected-zone.backend.configuration.revoked_keys
+          this .uses platform.protected-zone.backend.configuration.sshd_dropin 'takes its settings from it'
+        }
+
+        ob_ssh_principals = executable {
+          #Bash
+          technology 'shell script'
+          title 'ob-ssh-principals'
+          summary 'AuthorizedPrincipalsCommand helper of a backend'
+          description '
+            Installed at `/usr/local/sbin/ob-ssh-principals` and wired as the `AuthorizedPrincipalsCommand` of this host, running as `nobody`. It admits a certificate only when its key-id carries `bastion=<id>;user=<u>` with <u> the login user, and <id> listed in the allowlist when one is configured: a direct SSO certificate is refused before PAM runs.
+          '
+
+          this .uses platform.protected-zone.backend.configuration.allowed_bastions 'accepts a voucher only from a bastion it lists'
+        }
+
+        ob_ssh_principals .uses platform.open-bastion.fingerprint-pipe 'hands the fingerprint of the key that opened the session over'
+
+
+
+
+        backend_auth_cache = file {
+          #C
+          technology 'AES-256-GCM encrypted cache'
+          title 'Authorization cache'
+          summary '/var/cache/open-bastion/auth'
+          description '
+            A `sudo` inside a session that was just authorised does not open a second round trip: the answer is cached per user, server group and host, and the cached entry is what the elevation is decided on. The same entry is what admits a session while the portal is unreachable, for the lifetime the portal granted it.
+          '
+
+          metadata {
+            ttl 'from the portal (pamAccessOfflineTtl, 24 h when the answer carries none)'
+          }
+        }
+
+        backend_nss_cache = file {
+          #C
+          technology 'file cache'
+          title 'NSS cache'
+          summary '/var/cache/nss_llng'
+          description '
+            The lookups `libnss_openbastion.so` has answered, so a name resolves while the portal is unreachable. An entry older than `cache_ttl` is deleted the moment it is read rather than served, so the outage buffer ends in a cliff, and only root fills it: the module reaches the portal with the server token, which is root-only.
+          '
+
+          metadata {
+            ttl '300 s by default (cache_ttl, up to 86400 s)'
+          }
+        }
+
+        backend_force_online = file {
+          #C
+          technology 'operator flag'
+          title 'force_online'
+          summary '/etc/open-bastion/force_online'
+          description '
+            What an operator creates to stop the authorization cache being consulted: empty, for every user, or listing the names it must not answer for. Root only.
+          '
+        }
+
+        fp_spool = file {
+          technology 'spool directory'
+          title 'Public key fingerprints'
+          summary '/run/open-bastion/ssh-fp/<anchor>.fp, <anchor>.key, on the backend'
+          description '
+            Deposited by this host when the hop session was opened: `ob-ssh-principals.backend` submits the key that presented the certificate, and `ob-fp-submit` hands it to the sink as root. `pam_openbastion` reads it back to bind the elevation to that key.
+
+            Two drops per session, as on a bastion: `.fp` is the fingerprint the portal binds the elevation to, `.key` the algorithm and key blob the key policy reads.
+          '
+          style {
+            multiple true
+          }
+        }
+
+        /*
+         * The configuration set this host carries. Same files as the bastion,
+         * minus the ones only the hop needs (no `ssh-proxy.conf`, no
+         * `session-recorder.conf`, no certificate socket, no heartbeat);
+         * `ob-bastion-setup` writes them from the same package.
+         */
+
+      }
+    }
+  }
+}

@@ -1,0 +1,154 @@
+views {
+  dynamic view user-requests-a-certificate {
+    title 'Maximum security/User request a certificate for its SSH public key'
+    description '
+      The user asks the portal to sign their public key.
+
+      Nothing opens with the key alone. The portal authenticates the request against the session the user opened in the portal, and `ssh-ca` signs the public key with the CA key. What comes back is a certificate the bastion accepts, for the lifetime the plugin gives it, and the private half never leaves the workstation.
+    '
+
+    include workstation
+    include platform
+    include platform.central-authority
+
+
+    workstation.user -> workstation.user_client 'opens the SSH CA web page'
+    workstation.user_client -> workstation.user_keypair 'reads the public half'
+    workstation.user_client -> platform.central-authority.llng.portal 'POST /ssh/sign with the SSO cookie (their own public key, server group)'
+    platform.central-authority.llng.portal -> platform.central-authority.llng_sessions 'checks the SSO session: the user is authenticated'
+    platform.central-authority.llng.portal -> platform.central-authority.llng.llng-plugins.ssh-ca 'serves /ssh/sign for that user'
+    platform.central-authority.llng.llng-plugins.ssh-ca -> platform.central-authority.ssh_ca 'reads the CA key and signs'
+    platform.central-authority.llng.llng-plugins.ssh-ca -> platform.central-authority.llng.portal 'hands the certificate back'
+    platform.central-authority.llng.portal -> workstation.user_client 'returns the certificate'
+    workstation.user_client -> workstation.user_certificate 'saves the certificate'
+  }
+
+  dynamic view user-connects-to-bastion {
+    title 'Maximum security/User connects to the bastion'
+    description '
+      The connection the bastion accepts, end to end.
+
+      The user presents the certificate the portal signed. The bastion checks it against the CA key and the revocation list, then asks the portal whether this user may open a session on this host, and binds the answer to the fingerprint of the key that opened the connection. The session that opens is recorded from its first command.
+    '
+
+    include workstation
+    include platform
+    include platform.bastion
+    include platform.central-authority
+    include platform.open-bastion
+
+    workstation.user -> platform.bastion.sshd 'SSH with the signed certificate'
+    platform.bastion.sshd -> platform.bastion.open_bastion_ca_pub 'verifies the user certificate against the CA'
+    platform.bastion.sshd -> platform.bastion.revoked_keys 'refuses a serial that is in the KRL'
+    include platform.open-bastion.fingerprint-pipe with {
+      navigateTo public-key-fingerprint-pipe
+    }
+    platform.bastion.sshd -> platform.open-bastion.fingerprint-pipe 'AuthorizedPrincipalsCommand deposits the SSH fingerprint'
+    platform.open-bastion.fingerprint-pipe -> platform.bastion.ssh_fp_spool 'writes the drop as root'
+
+    platform.bastion.sshd -> platform.bastion.openbastion_pam_stack 'consults the PAM stack'
+    platform.bastion.openbastion_pam_stack -> platform.open-bastion.pam_openbastion 'loads the module'
+    platform.open-bastion.pam_openbastion -> platform.bastion.ssh_fp_spool 'reads the fingerprint deposited for this session'
+    platform.open-bastion.pam_openbastion -> platform.bastion.bastion_token 'presents the OIDC token'
+    platform.open-bastion.pam_openbastion -> platform.central-authority.llng.portal 'POST /pam/authorize (user, fingerprint, server group resolved from the client_id)'
+    platform.central-authority.llng.portal -> platform.central-authority.llng.llng-plugins.pam-access 'routes the request to the plugin'
+    platform.central-authority.llng.llng-plugins.pam-access -> platform.central-authority.ldap 'reads the identity, the groups and the rules'
+    platform.central-authority.llng.llng-plugins.pam-access -> platform.central-authority.llng.portal 'the portal signs the answer'
+    platform.central-authority.llng.portal -> platform.open-bastion.pam_openbastion 'returns the signed answer'
+    platform.open-bastion.pam_openbastion -> platform.bastion.sso_jwks 'checks the signature and the bindings against the trust anchor'
+    platform.open-bastion.pam_openbastion -> platform.bastion.auth_cache 'stores the answer, when the portal authorises offline use, for the TTL it gives'
+
+    include platform.bastion.recording-pipe with {
+      navigateTo session-recording
+    }
+    platform.bastion.sshd -> platform.bastion.recording-pipe 'ForceCommand starts the recording'
+    platform.bastion.recording-pipe -> platform.bastion.sessions_dir 'writes the typescript and its metadata'
+
+  }
+
+  dynamic view user-connects-to-backend-from-bastion {
+    title 'Maximum security/User connects to a backend from the bastion'
+    description '
+      A hop from the bastion into the protected zone.
+
+      The bastion cannot reuse the certificate the user came in with: it generates an ephemeral key pair, has a certificate minted for it through the portal, and re-originates the connection with that certificate as its proof. The backend then loads the same module the bastion loads, and decides again — this time for its own session, and on a certificate the bastion vouches for.
+    '
+
+    include workstation
+    include platform
+    include platform.bastion
+    include platform.protected-zone
+    include platform.protected-zone.backend
+    include platform.central-authority
+    include platform.open-bastion
+
+
+    workstation.user -> platform.bastion.ob_ssh 'asks for a backend hop'
+    platform.bastion.end_user_commands.ob_ssh -> platform.bastion.hop_keypair 'generates the ephemeral key pair in tmpfs'
+    platform.bastion.end_user_commands.ob_ssh -> platform.bastion.hop_keypair 'reads the public half'
+    include platform.bastion.certificate-minting-pipe with {
+      navigateTo certificate-minting-pipe
+    }
+    platform.bastion.end_user_commands.ob_ssh -> platform.bastion.certificate-minting-pipe 'requests a certificate for that public half'
+    platform.bastion.bastion_token -> platform.bastion.certificate-minting-pipe 'presented as the bearer token'
+    platform.bastion.certificate-minting-pipe -> platform.central-authority.llng.portal 'POST /pam/bastion-cert (target, voucher, ephemeral key, Bearer)'
+    platform.central-authority.llng.portal -> platform.central-authority.llng.llng-plugins.pam-access 'routes the request to the plugin'
+    platform.central-authority.llng.llng-plugins.pam-access -> platform.central-authority.llng.llng-plugins.ssh-ca 'asks for a short-lived certificate'
+    platform.central-authority.llng.llng-plugins.ssh-ca -> platform.central-authority.ssh_ca 'reads the CA key and signs'
+    platform.central-authority.llng.llng-plugins.ssh-ca -> platform.central-authority.llng.portal 'hands the certificate back'
+    platform.central-authority.llng.portal -> platform.bastion.certificate-minting-pipe 'returns the signed certificate in the answer'
+    platform.bastion.certificate-minting-pipe -> platform.bastion.end_user_commands.ob_ssh 'prints the certificate on stdout'
+    platform.bastion.end_user_commands.ob_ssh -> platform.bastion.hop_certificate 'writes the certificate into tmpfs, next to the ephemeral key'
+    platform.bastion.end_user_commands.ob_ssh -> platform.protected-zone.backend.backend_sshd 're-originates the SSH connection with the certificate (CertificateFile)'
+
+    platform.protected-zone.backend.backend_sshd -> platform.protected-zone.backend.configuration.open_bastion_ca_pub 'verifies the certificate against the CA'
+    platform.protected-zone.backend.backend_sshd -> platform.protected-zone.backend.configuration.revoked_keys 'refuses a serial that is in the KRL'
+    platform.protected-zone.backend.backend_sshd -> platform.protected-zone.backend.configuration.openbastion_pam_stack 'consults the PAM stack'
+    platform.protected-zone.backend.configuration.openbastion_pam_stack -> platform.open-bastion.pam_openbastion 'loads the same module the bastion loads'
+    platform.open-bastion.pam_openbastion -> platform.protected-zone.backend.fp_spool 'reads the fingerprint deposited when the session was opened'
+    platform.open-bastion.pam_openbastion -> platform.protected-zone.backend.configuration.token 'presents the OIDC token of this backend'
+    platform.open-bastion.pam_openbastion -> platform.central-authority.llng.portal 'POST /pam/authorize (user, fingerprint, server group resolved from the client_id)'
+    platform.central-authority.llng.portal -> platform.central-authority.llng.llng-plugins.pam-access 'routes the request to the plugin'
+    platform.central-authority.llng.llng-plugins.pam-access -> platform.central-authority.llng.portal 'the portal signs the answer'
+    platform.central-authority.llng.portal -> platform.open-bastion.pam_openbastion 'returns the signed answer'
+    platform.open-bastion.pam_openbastion -> platform.protected-zone.backend.backend_auth_cache 'stores the answer, when the portal authorises offline use, for the TTL it gives'
+  }
+
+  dynamic view sudo-on-a-backend {
+    title 'Maximum security/User sudoes on a backend'
+    description '
+      An elevation inside a session that is already open.
+
+      The user is already authenticated by the portal and already connected to the backend: this is the `sudo`, not the connection. `sudo` asks for the portal token through its prompt, and the module verifies that token against `/pam/verify`, bound to the certificate the session was opened with. The account phase then asks `/pam/authorize` whether this user may elevate on this host.
+    '
+
+    include workstation
+    include platform
+    include platform.protected-zone
+    include platform.central-authority
+    include platform.open-bastion
+
+    workstation.user -> platform.protected-zone.backend.configuration.openbastion_pam_stack 'runs sudo'
+    platform.protected-zone.backend.configuration.openbastion_pam_stack -> platform.open-bastion.pam_openbastion 'loads the same module the bastion loads'
+    platform.open-bastion.pam_openbastion -> workstation.user 'asks for the SSO token, through the sudo prompt'
+    workstation.user -> workstation.user_client 'opens the token page of the portal'
+    workstation.user_client -> platform.central-authority.llng.portal 'GET /pam, then POST /pam to generate it'
+    platform.central-authority.llng.portal -> platform.central-authority.llng_sessions 'checks the SSO session: the user is authenticated'
+    platform.central-authority.llng.portal -> platform.central-authority.llng.llng-plugins.pam-access 'generates a short-lived one-time token for that user'
+    platform.central-authority.llng.llng-plugins.pam-access -> platform.central-authority.llng.portal 'hands the token back'
+    platform.central-authority.llng.portal -> workstation.user_client 'returns {token, login, expires_in}'
+    workstation.user_client -> workstation.user 'the user keeps it for the sudo prompt'
+    workstation.user -> platform.open-bastion.pam_openbastion 'gives the SSO token'
+    platform.open-bastion.pam_openbastion -> platform.protected-zone.backend.fp_spool 'reads the fingerprint of the key that opened this session'
+    platform.open-bastion.pam_openbastion -> platform.central-authority.llng.portal 'POST /pam/verify (the SSO token, bound to that fingerprint)'
+    platform.central-authority.llng.portal -> platform.central-authority.llng.llng-plugins.pam-access 'routes the request to the plugin'
+    platform.central-authority.llng.llng-plugins.pam-access -> platform.central-authority.llng.portal 'the portal checks the token'
+    platform.central-authority.llng.portal -> platform.open-bastion.pam_openbastion 'returns the verdict'
+    platform.open-bastion.pam_openbastion -> platform.central-authority.llng.portal 'POST /pam/authorize (sudo_allowed, sudo_nopasswd), with the fingerprint'
+    platform.central-authority.llng.portal -> platform.central-authority.llng.llng-plugins.pam-access 'routes the request to the plugin'
+    platform.central-authority.llng.llng-plugins.pam-access -> platform.central-authority.ldap 'reads the identity and the sudo rules'
+    platform.central-authority.llng.llng-plugins.pam-access -> platform.central-authority.llng.portal 'the portal signs the answer'
+    platform.central-authority.llng.portal -> platform.open-bastion.pam_openbastion 'returns the signed answer'
+    platform.open-bastion.pam_openbastion -> platform.protected-zone.backend.backend_auth_cache 'stores the answer, when the portal authorises offline use, for the TTL it gives'
+  }
+}
