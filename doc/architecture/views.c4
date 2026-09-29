@@ -1,0 +1,34 @@
+views {
+  view index {
+    include external-network
+    include external-network.user
+
+    include platform
+    include platform.central-authority
+    include platform.central-authority.llng
+    include platform.central-authority.ldap
+
+    include platform.bastion
+
+    include platform.protected-zone
+    include platform.protected-zone.backend
+
+    include administrator.*
+    style platform {
+      border dashed
+    }
+  }
+
+  view context {
+    title 'Context'
+
+    include external-network.user
+    include administrator
+
+    include platform.bastion
+    include platform.central-authority
+    include platform.central-authority.llng
+    include platform.protected-zone
+    include platform.protected-zone.backend
+}
+}

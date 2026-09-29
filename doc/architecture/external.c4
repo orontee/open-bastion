@@ -1,0 +1,8 @@
+model {
+  libcurl = external-library {
+    #C
+    title 'libcurl'
+    summary 'Network transfer library'
+    link https://curl.se/libcurl/
+  }
+}

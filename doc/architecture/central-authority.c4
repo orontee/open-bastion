@@ -1,0 +1,79 @@
+model {
+  extend platform {
+    central-authority = zone {
+      #LemonLDAP-NG
+      title 'Central authority'
+
+      style {
+        color gray
+      }
+
+      llng = external-server {
+        technology 'LemonLDAP::NG'
+        title 'LemonLDAP::NG'
+        link https://lemonldap-ng.org/
+	style {
+	  icon bootstrap:key
+	}
+        it .uses ldap
+
+        portal = external-server {
+          #HTTP
+          title 'LemonLDAP::NG Portal'
+        }
+
+        manager = external-server {
+          #HTTP
+          title 'LemonLDAP::NG Manager'
+        }
+
+        llng-plugins = zone {
+          title 'LemonLDAP::NG plugins'
+
+          pam-access = plugin {
+            #Perl
+            technology 'LemonLDAP::NG plugin'
+            title 'pam-access'
+            summary 'Token Generation and Authorization'
+            description '
+              Provides the Portal `/pam/` endpoints.
+            '
+            link https://github.com/linagora/lemonldap-ng-plugins/tree/main/plugins/pam-access
+          }
+
+          ssh-ca = plugin {
+            #Perl
+            technology 'LemonLDAP::NG plugin'
+            title 'ssh-ca'
+            summary 'SSH Certificate Authority'
+            description '
+              Provides the Portal `/ssh/` endpoints.
+            '
+            link https://github.com/linagora/lemonldap-ng-plugins/tree/main/plugins/ssh-ca
+          }
+
+          oidc-device-authorization = plugin {
+            #Perl
+            technology 'LemonLDAP::NG plugin'
+            title 'oidc-device-authorization'
+            summary 'OIDC Device Authorization'
+            link https://github.com/linagora/lemonldap-ng-plugins/tree/main/plugins/oidc-device-authorization
+          }
+
+          oidc-device-organization = plugin {
+            #Perl
+            technology 'LemonLDAP::NG plugin'
+            title 'oidc-device-organization'
+            summary 'Organization Device Ownership'
+            link https://github.com/linagora/lemonldap-ng-plugins/tree/main/plugins/oidc-device-organization
+          }
+        }
+      }
+
+      ldap = external-server {
+        technology 'LDAP'
+        title 'Identities and access database'
+      }
+    }
+  }
+}

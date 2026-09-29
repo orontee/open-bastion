@@ -1,0 +1,17 @@
+model {
+  extend platform {
+    protected-zone = zone {
+      title 'Protected zone'
+      style {
+        color green
+      }
+      backend = server {
+        title 'Backend'
+        style {
+         multiple true
+         color green
+        }
+      }
+    }
+  }
+}

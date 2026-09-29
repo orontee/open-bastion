@@ -1,0 +1,120 @@
+model {
+  extend platform {
+    bastion = server {
+      title 'Bastion'
+
+      style {
+        icon bootstrap:shield-lock
+      }
+
+      bastion .connects protected-zone.backend 'connects user (as a hop)'
+
+      pam_openbastion = library {
+        #C
+        technology 'PAM module'
+        title 'pam_openbastion'
+        summary 'PAM authentication module'
+      }
+
+      libnss_openbastion = library {
+        #C
+        technology 'NSS library'
+        title 'libnss_openbastion'
+        summary 'NSS user resolution'
+      }
+
+      ob-cert = systemd-template-unit {
+        #socket
+        title 'ob-cert'
+        summary 'Certificate minting (per-connection)'
+
+        metadata {
+          user 'root'
+        }
+
+        ob-cert-daemon = executable {
+          #C
+          title 'ob-cert-daemon'
+
+          metadata {
+            man-page true
+          }
+
+          this .uses ob_cert_proto
+        }
+      }
+
+      ob-fp = systemd-template-unit {
+        #socket
+        title 'ob-fp'
+        summary 'SSH fingerprint sink (per-deposit)'
+
+        metadata {
+          user 'root'
+        }
+
+        ob-fp-daemon = executable {
+          #C
+          title 'ob-fp-daemon'
+
+          metadata {
+            man-page true
+          }
+        }
+      }
+
+      ob-record = systemd-template-unit {
+        #socket
+        title 'ob-record'
+        summary 'Session recording sink (per-connection)'
+
+        metadata {
+          user 'root'
+        }
+
+        ob-record-sink = executable {
+          #C
+          title 'ob-record-sink'
+
+          metadata {
+            man-page true
+          }
+
+          this .uses ob_cert_proto
+        }
+      }
+
+      ob_cert_proto = component {
+        #C
+        title 'ob_cert_proto'
+        summary 'Utilities to protect against buffer overflows and malformed inputs'
+      }
+
+      ob_client = component {
+        #C #HTTP
+        title 'ob_client'
+        summary 'HTTP client that talks to the LemonLDAP::NG Portal'
+        description '
+          It consumes the `/pam/*` endpoints.
+          It has the hability to sign requests with HMAC-SHA256.
+        '
+
+        it .requests central-authority.llng.portal
+      }
+
+      configuration_subsystem = component {
+        #C
+        summary 'Load configuration from file'
+        description '
+           The configuration is read from the configuration file, command
+           line arguments and PAM module arguments
+        '
+        this .uses openbastion_conf
+      }
+
+      openbastion_conf = file {
+        title 'openbastion.conf'
+      }
+    }
+  }
+}

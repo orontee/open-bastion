@@ -1,0 +1,89 @@
+specification {
+  element actor {
+    style {
+      shape person
+    }
+  }
+  element zone
+
+  element server {
+    style {
+      icon bootstrap:pc
+    }
+  }
+  element workstation {
+    style {
+      icon bootstrap:diagram-3
+    }
+  }
+
+  element external-server {
+    style {
+      color gray
+      icon bootstrap:server
+    }
+  }
+
+  element systemd-unit {
+    technology 'systemd unit'
+  }
+  element systemd-template-unit {
+    technology 'systemd template unit'
+  }
+
+  element executable {
+    style {
+      icon bootstrap:gear
+    }
+  }
+  element library
+  element external-library {
+    style {
+      color gray
+    }
+  }
+  element site
+  element plugin
+  
+  element component
+  element file {
+    style {
+      shape document
+    }
+  }
+  element generated-file {
+    style {
+      shape document
+      color gray
+    }
+  }
+
+  relationship uses {
+    title 'uses'
+  }
+
+  relationship produces {
+    title 'produces'
+  }
+
+  relationship requests {
+    title 'requests'
+    technology 'HTTP'
+  }
+
+  relationship connects {
+    title 'connects'
+    technology 'SSH'
+  }
+
+  tag Bash
+  tag C
+  tag HTTP
+  tag LDAP
+  tag LemonLDAP-NG
+  tag Perl
+  tag YAML
+  tag generated
+  tag socket
+  tag template
+}

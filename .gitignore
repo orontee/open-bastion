@@ -83,3 +83,6 @@ bv/
 # Python bytecode from the EBIOS consistency checker
 __pycache__/
 *.pyc
+
+# Artifact & cache folder for likec4
+/doc/architecture/.likec4/

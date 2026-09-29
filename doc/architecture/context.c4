@@ -1,0 +1,44 @@
+model {
+  external-network = zone {
+    title 'External network'
+
+    style {
+      color gray
+    }
+    user = actor {
+      title 'User'
+
+      it .requests platform.central-authority.llng.portal 'requests access token'
+      it .connects platform.bastion
+    }
+  }
+
+  administrator = actor {
+    title 'Administrator'
+    summary 'Deploys and configures Open Bastion components'
+    description '
+      The administrator deploys Open Bastion and
+      the LemonLDAP::NG plugins. He enrols backends in
+      LemondLDAP::NG.
+
+      The administrator Writes LLNG rules authorizing SSH and sudo
+      access for end users. He revokes access when needed.
+
+      Depending on the organization size, identities and access
+      management can be delegated to an IAG operator.
+    '
+
+    style {
+      color amber
+    }
+
+    it -> platform.bastion 'Deploy & configure Open Bastion'
+    it -> platform.backend 'Deploy & configure Open Bastion'
+    it -> platform.central-authority 'Deploy Open Bastion LLNG plugins, enroll backend, manage identities and access policies'
+
+  }
+
+  platform = zone {
+    title 'Platform'
+  }
+}

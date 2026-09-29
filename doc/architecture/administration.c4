@@ -1,0 +1,55 @@
+model {
+
+  control-node = workstation {
+
+    ob-builder = executable {
+      #Bash
+      title 'ob-builder'
+
+      this .uses installer-sh-in
+      this .produces installer-sh
+      this .uses main-yml-in
+      this .produces main-yml
+    }
+
+    installer-sh-in = file {
+      #Bash #template
+      title 'installer.sh.in'
+      summary 'Shell installer template'
+
+      style {
+        icon bootstrap:files
+      }
+    }
+
+    installer-sh = generated-file {
+      #Bash
+      title 'installer.sh'
+      summary 'Shell installer'
+
+      style {
+        icon bootstrap:filetype-sh
+      }
+    }
+
+    main-yml-in = file {
+      #YAML #template
+      title 'main.yml.in'
+      summary 'Ansible task template'
+
+      style {
+        icon bootstrap:files
+      }
+    }
+
+    main-yml = generated-file {
+      #YAML
+      title 'main.yml'
+      summary 'Ansible task'
+
+      style {
+        icon bootstrap:filetype-yml
+      }
+    }
+  }
+}
