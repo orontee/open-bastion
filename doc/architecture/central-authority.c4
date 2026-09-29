@@ -1,0 +1,115 @@
+model {
+  extend platform {
+    central-authority = zone {
+      #LemonLDAP-NG
+      technology 'LemonLDAP::NG and LDAP'
+      title 'Central authority'
+
+      style {
+        color gray
+      }
+
+      llng = external-server {
+        technology 'LemonLDAP::NG'
+        title 'LemonLDAP::NG'
+        link https://lemonldap-ng.org/
+	style {
+	  icon bootstrap:key
+	}
+        it .uses ldap
+
+        portal = external-server {
+          #HTTP
+          technology 'LemonLDAP::NG'
+          title 'LemonLDAP::NG Portal'
+        }
+
+        llng-plugins = zone {
+          technology 'LemonLDAP::NG plugins'
+          title 'LemonLDAP::NG plugins'
+
+          pam-access = plugin {
+            #Perl
+            technology 'LemonLDAP::NG plugin'
+            title 'pam-access'
+            summary 'Token Generation and Authorization'
+            description '
+              Provides the Portal `/pam/` endpoints.
+            '
+            link https://github.com/linagora/open-bastion/tree/main/llng/plugins/pam-access
+          }
+
+          ssh-ca = plugin {
+            #Perl
+            technology 'LemonLDAP::NG plugin'
+            title 'ssh-ca'
+            summary 'SSH Certificate Authority'
+            description '
+              Provides the Portal `/ssh/` endpoints.
+            '
+            link https://github.com/linagora/open-bastion/tree/main/llng/plugins/ssh-ca
+          }
+
+          oidc-device-authorization = plugin {
+            #Perl
+            technology 'LemonLDAP::NG plugin'
+            title 'oidc-device-authorization'
+            summary 'OIDC Device Authorization'
+            link https://github.com/linagora/open-bastion/tree/main/llng/plugins/oidc-device-authorization
+          }
+
+          oidc-device-organization = plugin {
+            #Perl
+            technology 'LemonLDAP::NG plugin'
+            title 'oidc-device-organization'
+            summary 'Organization Device Ownership'
+            link https://github.com/linagora/open-bastion/tree/main/llng/plugins/oidc-device-organization
+          }
+        }
+      }
+
+      /*
+       * The authority the certificates are signed with. It is not a service:
+       * it is the key pair the portal holds, and every host trusts its public
+       * half as `open-bastion_ca.pub`.
+       */
+      ssh_ca = file {
+        technology 'OpenSSH CA key pair'
+        title 'SSH CA'
+        summary 'Certificate authority of the ssh-ca plugin'
+        description '
+          The signing key pair. Every user certificate and every bastion
+          certificate is signed with it, so rotating it means redeploying the
+          public half on every host that trusts a certificate.
+        '
+
+        style {
+          icon bootstrap:key
+        }
+      }
+
+      /* The plugin, and nothing else, reads the private half. */
+      llng-plugins.ssh-ca .reads ssh_ca 'signs with the CA key'
+
+      llng_sessions = external-server {
+        technology 'Apache::Session'
+        title 'LLNG sessions'
+        summary 'The SSO session of every user'
+        description '
+          Where the portal keeps the session that proves a user is
+          authenticated: `globalStorage` in its configuration, a file store in
+          the shipped deployments and a database where one is configured. The
+          plugins never read it: the portal resolves the session and hands the
+          plugin the authenticated user.
+        '
+      }
+
+      llng.portal .uses llng_sessions 'reads the SSO session'
+
+      ldap = external-server {
+        technology 'LDAP'
+        title 'Identities and access database'
+      }
+    }
+  }
+}

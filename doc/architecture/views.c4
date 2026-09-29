@@ -1,0 +1,65 @@
+views {
+  view index {
+    include workstation
+    include workstation.user
+
+    include platform
+    include platform.central-authority
+    include platform.central-authority.llng
+    include platform.central-authority.ldap
+
+    include platform.bastion
+
+    include platform.protected-zone
+    include platform.protected-zone.backend
+
+    include workstation.administrator.*
+    style platform {
+      border dashed
+    }
+  }
+
+  view user-context {
+    title 'User Context'
+
+    include workstation.user
+
+    include platform.bastion
+    include platform.central-authority
+    include platform.central-authority.llng
+    include platform.protected-zone
+    include platform.protected-zone.backend
+  }
+
+  view administrator-context {
+    title 'Administrator Context'
+
+    include workstation.administrator
+
+    include platform.bastion
+    include platform.central-authority
+    include platform.central-authority.llng
+    include platform.protected-zone
+    include platform.protected-zone.backend
+
+    exclude platform.bastion -> platform.protected-zone.backend
+  }
+
+  view bastion-configuration-files {
+    title 'Bastion configuration files'
+
+    include platform.bastion.configuration
+    include platform.bastion.configuration.*
+
+    include platform.bastion.ob-krl-refresh-bin
+    include platform.bastion.ob_enroll
+    include platform.bastion.ob-heartbeat-bin
+  }
+
+  view backend-configuration-files {
+    title 'Backend configuration files'
+
+    include platform.protected-zone.backend.configuration
+    include platform.protected-zone.backend.configuration.*
+  }
+}

@@ -1,0 +1,83 @@
+model {
+
+  /*
+   * The recording chain and the fingerprint spool.
+   *
+   * Both follow the same shape: an unprivileged process (the recorder, the
+   * principals helper) writes into a socket, and a root daemon behind it writes
+   * the file. Neither trusts anything the caller says about who it is.
+   */
+  extend platform.bastion {
+
+    ob_session_recorder = executable {
+      #Bash
+      technology 'shell script'
+      title 'ob-session-recorder'
+      summary 'Starts the recording of a session or a command'
+      description '
+        Started by sshd (`ForceCommand`) for a session, and by the sudo path for
+        an elevation. It frames the stream and hands it to the connector.
+      '
+
+      this .uses session_recorder_conf
+      this .uses ob_record_connect
+    }
+
+    ob_record_connect = executable {
+      #C
+      technology 'ELF executable'
+      title 'ob-record-connect'
+      summary 'Unprivileged client of the recording socket'
+
+      this .uses ob-record-socket
+    }
+
+    ob_fp_submit = executable {
+      #C
+      technology 'ELF executable'
+      title 'ob-fp-submit'
+      summary 'Deposits the SSH fingerprint of a session'
+      description '
+        Run by sshd as the `AuthorizedPrincipalsCommand` helper, unprivileged.
+        It writes the fingerprint into the socket; the daemon behind it, not
+        this process, decides where the drop lands (#249).
+      '
+
+      this .uses ob-fp-socket
+    }
+
+    ssh_fp_spool = file {
+      technology 'spool directory'
+      title 'Public key fingerprints'
+      summary '/run/open-bastion/ssh-fp/<anchor>.fp'
+      description '
+        One drop per SSH session, owned by root, mode 0600. `pam_openbastion`
+        reads the drop matching its session anchor and sends the fingerprint to
+        the portal, which is what binds the session to the key that opened it.
+      '
+
+      style {
+        multiple true
+      }
+
+      ssh_fp_spool .uses ob-fp
+    }
+
+    sessions_dir = file {
+      technology 'directory'
+      title 'Session recordings'
+      summary '/var/lib/open-bastion/sessions/<user>/'
+      description '
+        One `.typescript` and one `.json` per session, both written by the sink
+        through `O_EXCL` so a duplicate session id cannot truncate an existing
+        record. Readable by the audit group only.
+      '
+
+      style {
+        multiple true
+      }
+
+      ob-record.ob-record-sink .produces sessions_dir
+    }
+  }
+}

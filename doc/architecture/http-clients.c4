@@ -1,0 +1,174 @@
+model {
+
+  /*
+   * Who talks HTTP to the portal, and with what.
+   *
+   * Every request to a LemonLDAP::NG plugin leaves one of the elements below:
+   * either `ob_client`, the C client compiled into the PAM module and the cert
+   * daemon, or a shell caller that goes through `curl` with the request-signing
+   * library. Nothing else reaches the portal -- the plugins never call back
+   * into a bastion, so the direction of every arrow in the dynamic views is
+   * outbound.
+   */
+  extend platform.bastion {
+
+    curl = external-library {
+      #Bash
+      technology 'command-line tool'
+      title 'curl'
+      summary 'HTTP client used by the shell callers'
+      link https://curl.se/
+    }
+
+    ob_sign_lib = file {
+      #Bash
+      technology 'Bash'
+      title 'ob-sign-lib.sh'
+      summary '/usr/lib/open-bastion/ob-sign-lib.sh'
+      description '
+        Signs the request (HMAC-SHA256 over method, path, timestamp, nonce and
+        body) and checks the answer against the JWKS when `response_signing` is
+        on. A shell caller that cannot load it sends nothing but the unsigned
+        call, and only when signing is off.
+      '
+
+      ob_sign_lib .uses ob_sign_request
+      ob_sign_lib .uses ob_verify_response
+      ob_sign_lib .uses curl
+    }
+
+    ob_sign_request = executable {
+      #C
+      technology 'ELF executable'
+      title 'ob-sign-request'
+      summary 'Signs one portal request'
+      metadata {
+        man-page true
+      }
+    }
+
+    ob_verify_response = executable {
+      #C
+      technology 'ELF executable'
+      title 'ob-verify-response'
+      summary 'Verifies a signed portal answer against the JWKS'
+      metadata {
+        man-page true
+      }
+
+      this .uses ob_jws
+    }
+
+    ob_client_jwt = executable {
+      #C
+      technology 'ELF executable'
+      title 'ob-client-jwt'
+      summary 'Builds the client_secret_jwt assertion (RFC 7523)'
+      description '
+        Keeps the OIDC client secret out of argv, where /proc/<pid>/cmdline
+        would expose it to every local user (#256).
+      '
+    }
+
+    ob_enroll = executable {
+      #Bash
+      technology 'shell script'
+      title 'ob-enroll'
+      summary 'Enrols this host with the portal (OIDC device grant)'
+
+      this .uses ob_client_jwt
+      this .uses curl
+      this .uses platform.bastion.configuration.openbastion_conf
+
+      this .produces configuration.bastion_token
+    }
+
+    ob_bastion_id = executable {
+      #Bash
+      technology 'shell script'
+      title 'ob-bastion-id'
+      summary 'Prints the bastion id a backend allows'
+
+      this .uses ob_sign_lib
+      this .uses platform.bastion.configuration.openbastion_conf
+    }
+
+    /* The bastion-side hop: the user runs ob-ssh, which asks the local cert
+     * daemon for a certificate and re-originates the connection with it. */
+    ob_ssh = executable {
+      #Bash
+      technology 'shell script'
+      title 'ob-ssh'
+      summary 'Connects to a backend with a minted certificate'
+      link https://github.com/linagora/open-bastion/blob/main/doc/references/bastion-cert-vouching.rst
+
+      this .uses ob_cert_request
+      this .uses ssh_proxy_conf
+    }
+
+    ob_scp = executable {
+      #Bash
+      technology 'shell script'
+      title 'ob-scp'
+      summary 'Copies to a backend with a minted certificate'
+
+      this .uses ob_cert_request
+    }
+
+    ob_sftp = executable {
+      #Bash
+      technology 'shell script'
+      title 'ob-sftp'
+      summary 'Transfers to a backend with a minted certificate'
+
+      this .uses ob_cert_request
+    }
+
+    ob_cert_request = executable {
+      #C
+      technology 'ELF executable'
+      title 'ob-cert-request'
+      summary 'Unprivileged client of the certificate socket'
+      description '
+        Writes the four-line request to `cert.sock` and prints the answer. It
+        carries no privilege and no secret: the daemon takes the user from the
+        connection SO_PEERCRED.
+      '
+
+      this .uses ob-cert-socket
+    }
+
+    /* ── what each client asks the plugins for ──────────────────────────── */
+
+    ob_client .requests platform.central-authority.llng.llng-plugins.pam-access 'POST /pam/authorize, /pam/verify, /pam/userinfo'
+    ob_client .requests platform.central-authority.llng.llng-plugins.pam-access 'POST /pam/bastion-cert'
+    ob_client .requests platform.central-authority.llng.llng-plugins.pam-access 'POST /pam/heartbeat'
+
+    ob-heartbeat-bin .requests platform.central-authority.llng.llng-plugins.pam-access 'POST /pam/heartbeat'
+    ob-heartbeat-bin .uses ob_sign_lib
+
+    ob-session-monitor-bin .requests platform.central-authority.llng.llng-plugins.pam-access 'POST /pam/userinfo'
+    ob-session-monitor-bin .uses ob_sign_lib
+
+    ob_bastion_id .requests platform.central-authority.llng.llng-plugins.pam-access 'POST /pam/bastion-token, /pam/whoami'
+
+    ob_enroll .requests platform.central-authority.llng 'POST /oauth2/device (device authorization grant)'
+    ob_enroll .requests platform.central-authority.llng.llng-plugins.pam-access 'POST /pam/whoami'
+
+    ob-krl-refresh-bin .requests platform.central-authority.llng.llng-plugins.ssh-ca 'GET /ssh/revoked (KRL)'
+    ob-krl-refresh-bin .uses curl
+
+    ob_bastion_setup .requests platform.central-authority.llng.llng-plugins.ssh-ca 'GET /ssh/ca'
+    ob_bastion_setup .uses curl
+
+    ob_sign_lib .requests platform.central-authority.llng 'GET /jwks.json (trust anchor)'
+  }
+
+  /*
+   * The user's own request, before any connection: a certificate for their
+   * public key. It is authenticated by the portal session, not by a secret on
+   * the workstation, and it is the only request in the model that leaves from
+   * outside the platform.
+   */
+  workstation.user_client .requests platform.central-authority.llng.llng-plugins.ssh-ca 'POST /ssh/sign (their own public key, server group)'
+}

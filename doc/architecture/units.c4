@@ -1,0 +1,206 @@
+model {
+
+  /*
+   * Every systemd unit open-bastion installs, with the executable it runs.
+   *
+   * Three of them are accept=yes socket pairs: the socket unit is what enables
+   * the service, and each connection spawns its own @-instance, so the daemon
+   * that handles a request holds no state. Their template services (ob-cert,
+   * ob-fp, ob-record) and their daemons are declared in open-bastion.c4.
+   *
+   * The four timers are what lets the daemons below reach the portal on their
+   * own: nothing on the host contacts the central authority except a login.
+   */
+  extend platform.bastion {
+
+    /* ── socket units ───────────────────────────────────────────────────── */
+
+    ob-cert-socket = systemd-unit {
+      #socket
+      title 'ob-cert.socket'
+      summary 'Certificate minting socket'
+      description '
+        `/run/open-bastion/cert.sock`, `Accept=yes`.
+
+        Enabling it is what replaced the `ob-bastion-cert-helper` sudoers
+        bridge: the request comes from an unprivileged client
+        (`ob-cert-request`) and the daemon takes the user from SO_PEERCRED.
+      '
+
+      ob-cert-socket .triggers ob-cert 'socket-activates'
+    }
+
+    ob-fp-socket = systemd-unit {
+      #socket
+      title 'ob-fp.socket'
+      summary 'SSH fingerprint deposit socket'
+      description '
+        `/run/open-bastion/ssh-fp.sock`, `Accept=yes`.
+
+        The spool behind it is why `pam_openbastion` can bind a session to the
+        SSH key that opened it: OpenSSH does not export `SSH_USER_AUTH` to PAM
+        during `pam_acct_mgmt`.
+      '
+
+      ob-fp-socket .triggers ob-fp 'socket-activates'
+    }
+
+    ob-record-socket = systemd-unit {
+      #socket
+      title 'ob-record.socket'
+      summary 'Session recording socket'
+      description '
+        `/run/open-bastion/rec.sock`, `Accept=yes`. The recorder
+        (`ob-record-connect`, run as the session user) hands the stream over;
+        the sink runs as root and writes under the sessions directory.
+      '
+
+      ob-record-socket .triggers ob-record 'socket-activates'
+    }
+
+    /* ── services ───────────────────────────────────────────────────────── */
+
+    ob-heartbeat = systemd-unit {
+      title 'ob-heartbeat.service'
+      summary 'Rotates the bastion token and reads the portal answer'
+      description '
+        The answer carries the current JWKS and the list of users to terminate.
+        It leaves `sso-jwks.json` alone unless the answer was signed by a key
+        already trusted (#339).
+      '
+
+      ob-heartbeat .runs ob-heartbeat-bin
+    }
+
+    ob-heartbeat-bin = executable {
+      #Bash
+      technology 'shell script'
+      title 'ob-heartbeat'
+      summary 'Bastion heartbeat'
+
+      this .uses platform.bastion.configuration.openbastion_conf
+
+      this .produces configuration.bastion_token 'rotates it'
+      this .produces configuration.sso_jwks 'rotates it'
+    }
+
+    ob-heartbeat-timer = systemd-unit {
+      title 'ob-heartbeat.timer'
+      summary 'Runs ob-heartbeat periodically'
+
+      ob-heartbeat-timer .triggers ob-heartbeat
+    }
+
+    ob-krl-refresh = systemd-unit {
+      title 'ob-krl-refresh.service'
+      summary 'Downloads the SSH revocation list'
+      description '
+        Writes `revoked_keys` from the ssh-ca plugin answer, and leaves the
+        previous file in place when the download fails or does not parse as a
+        KRL.
+      '
+
+      ob-krl-refresh .runs ob-krl-refresh-bin
+    }
+
+    ob-krl-refresh-bin = executable {
+      #Bash
+      technology 'shell script'
+      title 'ob-krl-refresh'
+      summary 'Revocation list refresh'
+
+      this .uses platform.bastion.configuration.openbastion_conf
+      this .produces revoked_keys
+    }
+
+    ob-krl-refresh-timer = systemd-unit {
+      title 'ob-krl-refresh.timer'
+      summary 'Runs ob-krl-refresh periodically'
+
+      ob-krl-refresh-timer .triggers ob-krl-refresh
+    }
+
+    ob-session-prune = systemd-unit {
+      title 'ob-session-prune.service'
+      summary 'Compresses and expires session recordings'
+      description '
+        Applies the retention policy of the sessions directory: compress the
+        recordings past the first age, then remove the ones past the second.
+      '
+
+      ob-session-prune .runs ob-session-prune-bin
+    }
+
+    ob-session-prune-bin = executable {
+      #Bash
+      technology 'shell script'
+      title 'ob-session-prune'
+      summary 'Session retention'
+
+      this .uses platform.bastion.configuration.openbastion_conf
+    }
+
+    ob-session-prune-timer = systemd-unit {
+      title 'ob-session-prune.timer'
+      summary 'Runs ob-session-prune periodically'
+
+      ob-session-prune-timer .triggers ob-session-prune
+    }
+
+    ob-audit-rotate = systemd-unit {
+      title 'ob-audit-rotate.service'
+      summary 'Rotates the audit log by signalling auditd'
+      description '
+        `systemctl kill --kill-who=main --signal=SIGUSR1 auditd.service`: the
+        kernel audit daemon owns its own rotation, so this unit has no binary
+        of its own.
+      '
+    }
+
+    ob-audit-rotate-timer = systemd-unit {
+      title 'ob-audit-rotate.timer'
+      summary 'Runs ob-audit-rotate periodically'
+
+      ob-audit-rotate-timer .triggers ob-audit-rotate
+    }
+
+    ob-session-monitor = systemd-unit {
+      title 'ob-session-monitor.service'
+      summary 'Watches the sessions the portal no longer knows about'
+      description '
+        Asks the portal for the state of the users it has seen
+        (`/pam/userinfo`) and terminates the local sessions whose access was
+        revoked meanwhile.
+      '
+
+      ob-session-monitor .runs ob-session-monitor-bin
+    }
+
+    ob-session-monitor-bin = executable {
+      #Bash
+      technology 'shell script'
+      title 'ob-session-monitor'
+      summary 'Offline session monitor'
+
+      this .uses platform.bastion.configuration.openbastion_conf
+    }
+
+    /* ── the host's own daemon, for the views ───────────────────────────── */
+
+    sshd = external-server {
+      technology 'OpenSSH'
+      title 'sshd'
+      summary 'OpenSSH server'
+      description '
+        Consults PAM (the open-bastion stack), runs the
+        `AuthorizedPrincipalsCommand` that deposits the session fingerprint,
+        and verifies the certificates minted for a backend hop.
+      '
+
+      this .uses openbastion_pam_stack
+      this .uses sshd_dropin
+      this .uses open_bastion_ca_pub
+      this .uses revoked_keys
+    }
+  }
+}
